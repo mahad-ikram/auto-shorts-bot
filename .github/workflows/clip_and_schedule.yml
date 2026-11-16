@@ -1,0 +1,116 @@
+# Ultimate 24/7 Autonomous YouTube Gaming Discovery, Clipping, Heatmap Analytics & Scheduling Workflow
+# Save this file in your repository as: .github/workflows/clip_and_schedule.yml
+
+name: 24-7 Autonomous Gaming Shorts & Heatmap Scheduler
+
+on:
+  # Runs automatically every 30 minutes, 24/7 (even while you sleep)
+  schedule:
+    - cron: "*/30 * * * *"
+
+  # Manual 1-click trigger from the GitHub Actions tab
+  workflow_dispatch:
+    inputs:
+      stream_url:
+        description: "Optional specific URL (leave blank for 24/7 auto-discovery from Drive + watchlist.txt + YouTube Search)"
+        required: false
+        default: ""
+      topic_niche:
+        description: "Topic/Niche for SEO ('auto' to detect from stream, or e.g. 'GTA 6', 'Minecraft', 'Podcast')"
+        required: false
+        default: "auto"
+      slice_minutes:
+        description: "Minutes of live stream to record per cycle"
+        required: false
+        default: "15"
+      max_clips:
+        description: "Maximum Shorts to render and schedule per cycle"
+        required: false
+        default: "2"
+      layout:
+        description: "Vertical 9:16 framing (blur | zoom | crop)"
+        required: false
+        default: "blur"
+      style:
+        description: "Caption animation style (bounce | hype | clean)"
+        required: false
+        default: "bounce"
+
+concurrency:
+  group: gta6-shorts-24x7-pipeline
+  cancel-in-progress: false
+
+jobs:
+  autonomous-clip-and-schedule:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    env:
+      AI_API_KEY: ${{ secrets.AI_API_KEY }}
+      GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+      GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
+      GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+      YT_REFRESH_TOKEN: ${{ secrets.YT_REFRESH_TOKEN }}
+      GDRIVE_INBOX_FOLDER_ID: ${{ secrets.GDRIVE_INBOX_FOLDER_ID }}
+      GDRIVE_OUTPUT_FOLDER_ID: ${{ secrets.GDRIVE_OUTPUT_FOLDER_ID }}
+      FB_PAGE_ID: ${{ secrets.FB_PAGE_ID }}
+      FB_PAGE_ACCESS_TOKEN: ${{ secrets.FB_PAGE_ACCESS_TOKEN }}
+      IG_USER_ID: ${{ secrets.IG_USER_ID }}
+      IG_ACCESS_TOKEN: ${{ secrets.IG_ACCESS_TOKEN }}
+      YT_PROXY: ${{ secrets.YT_PROXY }}
+      POST_GAP_HOURS: "3"
+      TOPIC_NICHE: ${{ inputs.topic_niche || vars.TOPIC_NICHE || 'auto' }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install FFmpeg, fonts, and Deno JS runtime
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ffmpeg fonts-dejavu-core fonts-noto-core unzip
+          curl -fsSL https://deno.land/install.sh | sh
+          echo "$HOME/.deno/bin" >> $GITHUB_PATH
+
+      - name: Install Python dependencies
+        run: |
+          pip install --upgrade pip
+          pip install httpx==0.28.1 numpy==2.2.6 pillow==11.3.0 sherpa-onnx==2.0.1 yt-dlp
+
+      - name: Cache Sherpa-ONNX Parakeet 0.6B speech model & 24/7 State Ledger
+        uses: actions/cache@v4
+        with:
+          path: |
+            models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8
+            work/bot_state_ledger.json
+          key: sherpa-and-state-${{ github.run_number }}
+          restore-keys: |
+            sherpa-and-state-
+
+      - name: Download Sherpa-ONNX model if not cached and GROQ_API_KEY is unset
+        if: env.GROQ_API_KEY == ''
+        run: |
+          if [ ! -f "models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8/tokens.txt" ]; then
+            mkdir -p models
+            curl -L -o models/model.tar.bz2               "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8.tar.bz2"
+            tar -xjf models/model.tar.bz2 -C models/
+            rm -f models/model.tar.bz2
+          fi
+
+      - name: Restore optional YouTube cookies (if configured in Secrets)
+        if: ${{ secrets.YT_COOKIES_B64 != '' }}
+        env:
+          YT_COOKIES_B64: ${{ secrets.YT_COOKIES_B64 }}
+        run: |
+          echo "$YT_COOKIES_B64" | base64 -d > "$RUNNER_TEMP/yt_cookies.txt"
+          echo "YT_COOKIES_FILE=$RUNNER_TEMP/yt_cookies.txt" >> $GITHUB_ENV
+
+      - name: Run 24/7 Autonomous Discovery, Analytics Heatmap Update, Clipping & Scheduling
+        run: |
+          python3 stream_clipper.py             --auto-24x7             --url "${{ inputs.stream_url || '' }}"             --topic "${{ inputs.topic_niche || 'auto' }}"             --slice-minutes "${{ inputs.slice_minutes || '15' }}"             --max-clips "${{ inputs.max_clips || '2' }}"             --layout "${{ inputs.layout || 'blur' }}"             --style "${{ inputs.style || 'bounce' }}"             --isolate-voice             --save-to-drive             --schedule

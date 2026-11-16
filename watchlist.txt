@@ -1,0 +1,23 @@
+# ============================================================================
+# 24/7 PREFERRED GAMING CHANNELS & AUTO-SEARCH WATCHLIST
+# Edit this file anytime in your GitHub browser!
+#
+# Format options (checked in priority order every 45 minutes while you sleep):
+#   1. @YouTubeHandle            -> Checks if this big YouTube channel is LIVE (or posted a new stream in the last 6h) via official YouTube API
+#   2. @YouTubeHandle | url      -> Checks the YouTube channel first; if YouTube blocks cloud IP download, auto-pulls from their Twitch/Kick simulcast
+#   3. https://...               -> Direct Twitch, Kick, or YouTube channel URL
+#   4. SEARCH: <keyword>         -> Uses official YouTube Data API v3 (search.list, eventType=live, order=viewCount) to find top live streams on YouTube
+# ============================================================================
+
+@IShowSpeed | https://www.twitch.tv/ishowspeed
+@TypicalGamer
+@KaiCenatLive | https://www.twitch.tv/kaicenat
+@CaseOh | https://www.twitch.tv/caseoh_
+@xQcOW | https://www.twitch.tv/xqc
+@Valkyrae
+@TechnoGamerzOfficial
+@CarryisLive
+https://www.twitch.tv/tarik
+https://kick.com/adinross
+SEARCH: GTA 6 live gameplay
+SEARCH: Grand Theft Auto VI live stream

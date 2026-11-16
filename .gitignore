@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+.env
+models/
+work/run_*/
+work/clips/*.mp4
+work/clips/*.jpg
+work/clips/*.json
