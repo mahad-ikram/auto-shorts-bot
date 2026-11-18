@@ -938,7 +938,7 @@ def render_vertical_short(
     ttf_path = _find_system_ttf()
 
     if layout == "crop" or src_h >= src_w:
-        fg_h, hook_y, cap_y = OUT_H, 300, 1380
+        fg_h, hook_y, cap_y = OUT_H, 310, 1240
         vf = f"[0:v]fps={OUT_FPS},scale={OUT_W}:{OUT_H}:force_original_aspect_ratio=increase,crop={OUT_W}:{OUT_H},setsar=1[v0];"
     else:
         fg_h = 1000 if layout == "zoom" else min(OUT_H, int(round(OUT_W * src_h / src_w / 2)) * 2)

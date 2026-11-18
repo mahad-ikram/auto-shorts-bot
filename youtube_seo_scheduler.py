@@ -1340,12 +1340,38 @@ IG_RUPLOAD_URL = "https://rupload.facebook.com/ig-api-upload/v21.0"
 
 
 def build_social_caption(seo: Dict, streamer: str) -> str:
-    """Formats a punchy Instagram & Facebook Reels caption with credit and hashtags (max 2,200 chars)."""
-    title = seo.get("title", "").replace("#Shorts", "").strip()
-    desc = seo.get("description", "").replace("#Shorts", "#Reels").strip()
-    tags = ["#" + re.sub(r"[^a-zA-Z0-9]", "", t) for t in (seo.get("tags") or [])[:8] if t]
-    tag_line = " ".join(tags + ["#Reels", "#GamingReels", "#ViralReels"])
-    return f"{title}\n\n{desc}\n\n{tag_line}"[:2150]
+    """
+    2026 Facebook & Instagram Reels SEO Caption (strictly 10-380 chars, 4 niche hashtags max):
+      - Passes Facebook's Quality Checklist (10-400 characters)
+      - Respects Instagram's 5-hashtag cap (drops generic #Reels/#ViralReels spam)
+      - Packs natural keywords + a comment-driving question + creator credit
+    """
+    raw_title = re.sub(r"#\w+", "", seo.get("title", "")).strip(" -|")
+    question = (seo.get("pinned_comment") or "Would you have survived this? Drop your thoughts below!").strip()
+    credit = f"Credit: {streamer}" if streamer else ""
+
+    niche_tags: List[str] = []
+    seen = set()
+    for t in (seo.get("tags") or []):
+        clean = re.sub(r"[^a-zA-Z0-9]", "", str(t))
+        low = clean.lower()
+        if clean and 3 <= len(clean) <= 24 and low not in seen and low not in {"shorts", "youtubeshorts", "reels", "viralreels", "gamingreels", "viral", "fyp"}:
+            seen.add(low)
+            niche_tags.append("#" + clean)
+        if len(niche_tags) >= 3:
+            break
+    if "razongamerz" not in seen:
+        niche_tags.append("#RazonGamerz")
+    tag_line = " ".join(niche_tags[:4])
+
+    # Assemble cleanly under 380 characters (Meta Quality Checklist sweet spot: 150-380 chars)
+    body = f"{raw_title}\n\n{question}"
+    if credit:
+        body += f" ({credit})"
+    max_body = max(60, 380 - len(tag_line) - 2)
+    if len(body) > max_body:
+        body = body[: max_body - 1].rstrip() + "…"
+    return f"{body}\n\n{tag_line}"[:390]
 
 
 def upload_facebook_reel(
