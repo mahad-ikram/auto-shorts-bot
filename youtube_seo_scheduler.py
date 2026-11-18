@@ -1,3 +1,4 @@
+import subprocess
 """
 Step 1 (Ultimate 24/7 Edition) — YouTube Live Auto-Discovery, Analytics Heatmap Optimizer,
 Google Drive Sync & Native YouTube `publishAt` Scheduler
