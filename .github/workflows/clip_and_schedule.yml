@@ -2,34 +2,34 @@ name: 24-7 Autonomous Gaming Shorts & Heatmap Scheduler
 
 on:
   schedule:
-    - cron: "*/30 * * * *"
+    - cron: "0 */4 * * *"
 
   workflow_dispatch:
     inputs:
       stream_url:
-        description: "Optional specific URL (leave blank for 24/7 auto-discovery from Drive + watchlist.txt + YouTube Search)"
+        description: "Optional specific URL (leave blank for 24/7 auto-discovery)"
         required: false
         default: ""
       topic_niche:
-        description: "Topic/Niche for SEO ('auto' to detect from stream, or e.g. 'GTA 6', 'Minecraft', 'Podcast')"
+        description: "Topic/Niche for SEO ('auto' to detect from stream, or e.g. 'GTA 6')"
         required: false
         default: "auto"
       slice_minutes:
-        description: "Minutes of live stream to record per cycle"
+        description: "Minutes of live stream to record per cycle (10-15 recommended)"
         required: false
-        default: "15"
+        default: "12"
       max_clips:
         description: "Maximum Shorts to render and schedule per cycle"
         required: false
-        default: "2"
+        default: "1"
       layout:
         description: "Vertical 9:16 framing (blur | zoom | crop)"
         required: false
         default: "blur"
       style:
-        description: "Caption animation style (bounce | hype | clean)"
+        description: "Caption style (auto = AI picks per clip | vice_hype | cyber_gold | rage_neon | clean_pro)"
         required: false
-        default: "bounce"
+        default: "auto"
 
 concurrency:
   group: gta6-shorts-24x7-pipeline
@@ -56,7 +56,11 @@ jobs:
       YT_COOKIES_B64: ${{ secrets.YT_COOKIES_B64 }}
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
       TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-      POST_GAP_HOURS: "3"
+      POST_GAP_HOURS: "4"
+      MAX_DAILY_YT: "3"
+      MAX_DAILY_FB: "2"
+      MAX_DAILY_IG: "2"
+      MIN_VIRAL_SCORE: "72"
       TOPIC_NICHE: ${{ github.event.inputs.topic_niche || vars.TOPIC_NICHE || 'auto' }}
 
     steps:
@@ -96,8 +100,7 @@ jobs:
         run: |
           if [ ! -f "models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8/tokens.txt" ]; then
             mkdir -p models
-            curl -L -o models/model.tar.bz2 \
-              "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8.tar.bz2"
+            curl -L -o models/model.tar.bz2               "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8.tar.bz2"
             tar -xjf models/model.tar.bz2 -C models/
             rm -f models/model.tar.bz2
           fi
@@ -111,14 +114,4 @@ jobs:
 
       - name: Run 24/7 Autonomous Discovery, Analytics Heatmap Update, Clipping & Scheduling
         run: |
-          python3 stream_clipper.py \
-            --auto-24x7 \
-            --url "${{ github.event.inputs.stream_url || '' }}" \
-            --topic "${{ github.event.inputs.topic_niche || 'auto' }}" \
-            --slice-minutes "${{ github.event.inputs.slice_minutes || '15' }}" \
-            --max-clips "${{ github.event.inputs.max_clips || '2' }}" \
-            --layout "${{ github.event.inputs.layout || 'blur' }}" \
-            --style "${{ github.event.inputs.style || 'bounce' }}" \
-            --isolate-voice \
-            --save-to-drive \
-            --schedule
+          python3 stream_clipper.py             --auto-24x7             --url "${{ github.event.inputs.stream_url || '' }}"             --topic "${{ github.event.inputs.topic_niche || 'auto' }}"             --slice-minutes "${{ github.event.inputs.slice_minutes || '12' }}"             --max-clips "${{ github.event.inputs.max_clips || '1' }}"             --layout "${{ github.event.inputs.layout || 'blur' }}"             --style "${{ github.event.inputs.style || 'auto' }}"             --isolate-voice             --save-to-drive             --schedule

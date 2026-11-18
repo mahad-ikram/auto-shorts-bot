@@ -1093,34 +1093,58 @@ def build_shorts_thumbnail(
     out_jpg: Path,
     badge_text: str,
     font_path: Optional[Path] = None,
+    theme: str = "vice_hype",
 ) -> Path:
     im = Image.open(frame_jpg).convert("RGB").resize((1080, 1920), Image.Resampling.LANCZOS)
     draw = ImageDraw.Draw(im, "RGBA")
+    text = re.sub(r"\s+", " ", (badge_text or "INSANE CLIP").upper()).strip()[:26]
 
-    text = re.sub(r"\s+", " ", (badge_text or "LIVE HIGHLIGHT").upper()).strip()[:24]
-    font_size = 76
+    resolved_font = font_path
+    if not (resolved_font and resolved_font.is_file()):
+        for cand in [
+            Path("fonts/Poppins-ExtraBold.ttf"),
+            Path("fonts/Anton-Regular.ttf"),
+            Path("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"),
+            Path("/usr/share/fonts/truetype/noto/NotoSans-Bold.ttf"),
+        ]:
+            if cand.is_file():
+                resolved_font = cand
+                break
+
+    font_size = 78
     font = None
-    if font_path and font_path.is_file():
-        try:
-            font = ImageFont.truetype(str(font_path), font_size)
-        except OSError:
-            font = None
-    if font is None:
-        font = ImageFont.load_default()
+    while font_size >= 44:
+        if resolved_font and resolved_font.is_file():
+            try:
+                font = ImageFont.truetype(str(resolved_font), font_size)
+            except OSError:
+                font = ImageFont.load_default()
+                break
+        else:
+            font = ImageFont.load_default()
+            break
+        bbox = draw.textbbox((0, 0), text, font=font)
+        if (bbox[2] - bbox[0]) <= 860:
+            break
+        font_size -= 4
 
     bbox = draw.textbbox((0, 0), text, font=font)
     tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
-    pad_x, pad_y = 44, 28
+    pad_x, pad_y = 48, 28
     bw, bh = min(980, tw + pad_x * 2), th + pad_y * 2
-
-    x0 = (1080 - bw) // 2
-    y0 = 1120 - bh // 2
+    x0, y0 = (1080 - bw) // 2, 1160 - bh // 2
     x1, y1 = x0 + bw, y0 + bh
 
-    draw.rounded_rectangle([x0 - 6, y0 + 8, x1 + 6, y1 + 14], radius=28, fill=(0, 0, 0, 180))
-    draw.rounded_rectangle([x0, y0, x1, y1], radius=26, fill=(217, 56, 30, 248), outline=(255, 255, 255, 255), width=5)
-    draw.text((1080 // 2 - tw // 2, y0 + pad_y - bbox[1]), text, font=font, fill=(255, 255, 255, 255))
-
+    themes = {
+        "vice_hype": {"fill": (255, 42, 133, 248), "outline": (255, 183, 3, 255), "ink": (255, 255, 255, 255)},
+        "cyber_gold": {"fill": (123, 44, 191, 248), "outline": (255, 183, 3, 255), "ink": (255, 255, 255, 255)},
+        "rage_neon": {"fill": (9, 10, 16, 248), "outline": (255, 42, 133, 255), "ink": (255, 183, 3, 255)},
+        "clean_pro": {"fill": (9, 10, 16, 242), "outline": (248, 249, 250, 255), "ink": (248, 249, 250, 255)},
+    }
+    pal = themes.get(theme, themes["vice_hype"])
+    draw.rounded_rectangle([x0 - 8, y0 + 10, x1 + 8, y1 + 16], radius=28, fill=(0, 0, 0, 190))
+    draw.rounded_rectangle([x0, y0, x1, y1], radius=24, fill=pal["fill"], outline=pal["outline"], width=6)
+    draw.text((1080 // 2 - tw // 2, y0 + pad_y - bbox[1]), text, font=font, fill=pal["ink"])
     out_jpg.parent.mkdir(parents=True, exist_ok=True)
     im.save(out_jpg, format="JPEG", quality=92)
     return out_jpg

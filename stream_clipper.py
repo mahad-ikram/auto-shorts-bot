@@ -71,50 +71,17 @@ CAP_MAX_W = 960
 SR = 16000
 
 STYLES = {
-    "bounce": {
-        "font": "Poppins ExtraBold",
-        "size": 124,
-        "base": "FFFFFF",
-        "active": "00F0FF",
-        "strong": "FFFFFF",
-        "outline": 7,
-        "pop": 112,
-        "upper": True,
-        "per": 3,
-    },
-    "hype": {
-        "font": "Anton",
-        "size": 140,
-        "base": "FFFFFF",
-        "active": "3C3CFF",
-        "strong": "00D7FF",
-        "outline": 7,
-        "pop": 114,
-        "upper": True,
-        "per": 2,
-    },
-    "clean": {
-        "font": "Poppins ExtraBold",
-        "size": 96,
-        "base": "FFFFFF",
-        "active": "6BD7FF",
-        "strong": "FFFFFF",
-        "outline": 5,
-        "pop": 106,
-        "upper": False,
-        "per": 4,
-    },
+    "vice_hype": {"font": "Poppins ExtraBold", "size": 124, "base": "FAF9F8", "active": "03B7FF", "strong": "852AFF", "outline": 8, "pop": 115, "upper": True, "per": 3, "hook_box": "852AFF", "hook_ink": "FAF9F8", "hook_border": "03B7FF"},
+    "cyber_gold": {"font": "Poppins ExtraBold", "size": 120, "base": "FAF9F8", "active": "03B7FF", "strong": "03B7FF", "outline": 8, "pop": 112, "upper": True, "per": 3, "hook_box": "BF2C7B", "hook_ink": "03B7FF", "hook_border": "03B7FF"},
+    "rage_neon": {"font": "Anton", "size": 138, "base": "FAF9F8", "active": "852AFF", "strong": "03B7FF", "outline": 8, "pop": 116, "upper": True, "per": 2, "hook_box": "100A09", "hook_ink": "03B7FF", "hook_border": "852AFF"},
+    "clean_pro": {"font": "Poppins ExtraBold", "size": 106, "base": "FAF9F8", "active": "03B7FF", "strong": "852AFF", "outline": 6, "pop": 108, "upper": True, "per": 3, "hook_box": "100A09", "hook_ink": "FAF9F8", "hook_border": "BF2C7B"},
 }
+STYLES["bounce"] = STYLES["vice_hype"]
+STYLES["hype"] = STYLES["rage_neon"]
+STYLES["clean"] = STYLES["clean_pro"]
+STYLES["auto"] = STYLES["vice_hype"]
 
-HOOK_BOX = {
-    "size": 88,
-    "ink": "14100E",
-    "box": "FFFFFF",
-    "pad_x": 36,
-    "pad_y": 22,
-    "radius": 26,
-    "max_w": 900,
-}
+HOOK_BOX = {"size": 82, "ink": "FAF9F8", "box": "852AFF", "pad_x": 40, "pad_y": 22, "radius": 24, "max_w": 900}
 
 _COMMON_ROMAN = {
     "में": "mein", "मैं": "main", "हैं": "hain", "है": "hai", "नहीं": "nahi",
@@ -603,29 +570,36 @@ def _transcribe_sherpa_onnx(pcm: np.ndarray) -> List[Dict]:
 # 4. Loudness Z-Score & AI Viral Clip Scout
 # ---------------------------------------------------------------------------
 CLIP_SCOUT_SCHEMA = {
-    "type": "ARRAY",
-    "items": {
-        "type": "OBJECT",
-        "properties": {
-            "start": {"type": "NUMBER"},
-            "end": {"type": "NUMBER"},
-            "score": {"type": "INTEGER"},
-            "hook": {"type": "STRING"},
-            "highlight_words": {"type": "ARRAY", "items": {"type": "STRING"}},
-            "reason": {"type": "STRING"},
-        },
-        "required": ["start", "end", "score", "hook", "highlight_words", "reason"],
+    "type": "OBJECT",
+    "properties": {
+        "clips": {
+            "type": "ARRAY",
+            "items": {
+                "type": "OBJECT",
+                "properties": {
+                    "start": {"type": "NUMBER"},
+                    "end": {"type": "NUMBER"},
+                    "score": {"type": "INTEGER"},
+                    "is_boring_or_menu": {"type": "BOOLEAN"},
+                    "hook": {"type": "STRING"},
+                    "visual_style": {"type": "STRING"},
+                    "highlight_words": {"type": "ARRAY", "items": {"type": "STRING"}},
+                    "reason": {"type": "STRING"},
+                },
+                "required": ["start", "end", "score", "is_boring_or_menu", "hook", "visual_style", "highlight_words", "reason"],
+            },
+        }
     },
+    "required": ["clips"],
+}
+
+_BANNED_GENERIC_HOOKS = {
+    "wait for this reaction", "wait for it", "wait for his reaction",
+    "wait for her reaction", "watch till the end", "watch until the end", "live highlight", "gta 6 live",
 }
 
 
-
 def snap_clip_to_sentences(words: List[Dict], start: float, end: float, min_s: float = 18.0, max_s: float = 58.0) -> Tuple[float, float]:
-    """
-    Adopted from `purffle_shorts/clipper.py` (`_snap()`):
-    Groups word timestamps into complete spoken sentences (split on `.!?` or pauses > 0.85s)
-    and snaps `start` and `end` to sentence boundaries so streamers are never cut mid-word.
-    """
     if not words:
         return start, end
     sents: List[Tuple[float, float]] = []
@@ -650,11 +624,6 @@ def snap_clip_to_sentences(words: List[Dict], start: float, end: float, min_s: f
 
 
 def detect_face_center_x(video_path: Path, start: float, dur: float) -> Optional[float]:
-    """
-    Adopted from `purffle_shorts/clipper.py` (`_face_detector` & `plan_face_crop`):
-    Samples frames from the clip using OpenCV's frontal face detector to find the median horizontal
-    position (0.0..1.0) of the streamer's face so center-crops never slice off a corner webcam!
-    """
     try:
         import cv2
         cascade_path = cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
@@ -699,15 +668,14 @@ def pick_viral_gta6_moments(
     db: np.ndarray,
     title: str,
     uploader: str,
-    max_clips: int = 2,
-    min_len: int = 22,
-    max_len: int = 55,
+    max_clips: int = 1,
+    min_len: int = 20,
+    max_len: int = 52,
     chat_buckets: Optional[Dict[int, int]] = None,
 ) -> List[Dict]:
     z = loud_zscore(db)
-    total_dur_est = float(len(db)) if len(db) else (words[-1]['e'] if words else 60.0)
+    total_dur_est = float(len(db)) if len(db) else (words[-1]["e"] if words else 60.0)
     chat_spikes = detect_10s_chat_explosion_spikes(chat_buckets or {}, total_dur_est)
-    chat_pre_roll_secs = {int(s['clip_start']): s for s in chat_spikes}
     lines: List[str] = []
     cur_line: List[str] = []
     line_start = 0.0
@@ -718,54 +686,75 @@ def pick_viral_gta6_moments(
         cur_line.append(w["w"])
         if len(cur_line) >= 12 or w["w"].endswith((".", "!", "?")):
             sec_idx = min(len(z) - 1, max(0, int(line_start))) if len(z) else 0
-            loud_tag = " (LOUD)" if (len(z) and float(z[sec_idx : sec_idx + 4].max(initial=0.0)) >= 1.35) else ""
-            chat_hit = next((cs for cs in chat_spikes if abs(line_start - cs["clip_start"]) <= 8.0), None)
+            loud_tag = " (LOUD SPIKE)" if (len(z) and float(z[sec_idx : sec_idx + 4].max(initial=0.0)) >= 1.45) else ""
+            chat_hit = next((cs for cs in chat_spikes if abs(line_start - cs["clip_start"]) <= 10.0), None)
             if chat_hit:
-                loud_tag += f" (CHAT EXPLODED {chat_hit['msgs_in_10s']} MSGS/10s AT {chat_hit['spike_sec']:.0f}s -> START CLIP HERE 22s BEFORE SPIKE!)"
+                loud_tag += f" (CHAT EXPLODED {chat_hit['msgs_in_10s']} MSGS/10s AT {chat_hit['spike_sec']:.0f}s -> PRE-ROLL START HERE!)"
             lines.append(f"[{line_start:.1f}s]{loud_tag} " + " ".join(cur_line))
             cur_line = []
     if cur_line:
         lines.append(f"[{line_start:.1f}s] " + " ".join(cur_line))
 
-    key = env("AI_API_KEY")
-    if key and lines:
+    min_score = int(env("MIN_VIRAL_SCORE", "72") or "72")
+    force_clip = env("FORCE_CLIP", "0") == "1"
+
+    if lines:
         prompt = (
-            f"You are a viral YouTube Shorts scout (Topic/Niche: {env('TOPIC_NICHE', 'auto')}).\n"
-            f"Streamer: {uploader} | Stream: {title}\n"
-            f"Pick up to {max_clips} standalone clips ({min_len}s to {max_len}s each) with the strongest reaction, "
-            f"funny fail, clutch play, hot take, or shocking moment. Lines marked (LOUD) indicate audio spikes.\n"
-            f"Rules:\n"
-            f"- hook: max 5 words ALL CAPS shown on video.\n"
-            f"- highlight_words: 3 to 6 punch words spoken in the clip.\n\n"
+            f"You are the viral Shorts producer & creative director for gaming channel RazonGamerz.\n"
+            f"Streamer: {uploader} | Stream Title: {title} | Niche: {env('TOPIC_NICHE', 'auto')}\n"
+            f"Analyze the timestamped transcript (with CHAT EXPLODED spikes and LOUD SPIKE markers) "
+            f"and find up to {max_clips} GENUINELY intense, funny, shocking, clutch, or viral moments ({min_len}s to {max_len}s each).\n\n"
+            f"STRICT QUALITY GATE:\n"
+            f"- Set is_boring_or_menu=true and score<=55 if the streamer is on a menu/countdown/loading screen, greeting chat, or low-energy small talk with no real climax.\n"
+            f"- Only give score>=75 for a real emotional peak, insane clutch, hilarious fail, shock reveal, or chat explosion.\n"
+            f"- hook: 3 to 5 punchy ALL-CAPS words SPECIFIC to what actually happens (e.g. 'HE DESTROYED THE ENTIRE SQUAD', '6-STAR COP CHASE FAIL'). NEVER write 'WAIT FOR THIS REACTION' or 'WAIT FOR IT'.\n"
+            f"- visual_style: pick ONE matching the vibe -> 'vice_hype', 'cyber_gold', 'rage_neon', or 'clean_pro'.\n"
+            f"- highlight_words: 4 to 6 exact punch words spoken inside [start..end].\n\n"
+            f'Return JSON object: {{"clips": [...]}}\n\n'
             f"Transcript:\n" + "\n".join(lines[:450])
         )
         try:
-            picks = call_gemini_json_with_cascade(prompt, CLIP_SCOUT_SCHEMA, ai_key=key)
-            if isinstance(picks, list) and picks:
-                return picks[:max_clips]
+            res = call_gemini_json_with_cascade(prompt, CLIP_SCOUT_SCHEMA)
+            raw_clips = res.get("clips") if isinstance(res, dict) else (res if isinstance(res, list) else [])
+            approved: List[Dict] = []
+            for c in raw_clips or []:
+                score = int(c.get("score") or 0)
+                boring = bool(c.get("is_boring_or_menu", False))
+                hook_txt = re.sub(r"\s+", " ", str(c.get("hook") or "")).strip().upper()
+                if hook_txt.lower() in _BANNED_GENERIC_HOOKS or not hook_txt:
+                    hook_txt = f"{uploader.upper()[:10]} INSANE MOMENT"
+                c["hook"] = hook_txt[:34]
+                if c.get("visual_style") not in STYLES:
+                    c["visual_style"] = "vice_hype"
+                if (not boring and score >= min_score) or force_clip:
+                    approved.append(c)
+                else:
+                    print(f"[QUALITY GATE] Rejected clip ({c.get('start')}s-{c.get('end')}s): score={score}, boring/menu={boring} -> {c.get('reason')}")
+            if approved:
+                approved.sort(key=lambda x: int(x.get("score") or 0), reverse=True)
+                return approved[:max_clips]
+            print(f"[QUALITY GATE] AI found 0 viral moments above score {min_score} in this slice. Skipping upload!")
+            return []
         except Exception as exc:
-            print(f"[WARN] AI clip scout cascade fell back to loudness peak detector ({exc})")
+            print(f"[WARN] AI clip scout failed ({exc}); using chat/audio spike verifier...")
 
     total_dur = float(len(db)) if len(db) else (words[-1]["e"] if words else 30.0)
+    max_z = float(z.max()) if len(z) else 0.0
     if chat_spikes:
         top_cs = chat_spikes[0]
         start_s, end_s = top_cs["clip_start"], top_cs["clip_end"]
-    else:
-        peak_sec = int(np.argmax(db)) if len(db) else int(total_dur // 2)
-        start_s = max(0.0, float(peak_sec - 12))
+        hook_fb, style_fb = f"CHAT EXPLODED AT {uploader.upper()[:10]}", "vice_hype"
+    elif max_z >= 2.2 or force_clip:
+        peak_sec = int(np.argmax(z)) if len(z) else int(total_dur // 2)
+        start_s = max(0.0, float(peak_sec - 14))
         end_s = min(total_dur, start_s + min(max_len, max(min_len, 30)))
+        hook_fb, style_fb = f"{uploader.upper()[:12]} LOST IT", "rage_neon"
+    else:
+        print(f"[QUALITY GATE] No chat spike and low audio intensity (max_z={max_z:.2f}). Skipping boring slice.")
+        return []
     if end_s - start_s < 5.0:
         start_s, end_s = 0.0, min(total_dur, 30.0)
-    return [
-        {
-            "start": round(start_s, 2),
-            "end": round(end_s, 2),
-            "score": 85,
-            "hook": "WAIT FOR THIS REACTION",
-            "highlight_words": ["wait", "insane", "bro", "police", "vice"],
-            "reason": "Peak audio loudness spike detected.",
-        }
-    ]
+    return [{"start": round(start_s, 2), "end": round(end_s, 2), "score": 78, "is_boring_or_menu": False, "hook": hook_fb[:34], "visual_style": style_fb, "highlight_words": ["insane", "bro", "clutch", "what", "no"], "reason": "Verified chat/loudness spike."}]
 
 
 # ---------------------------------------------------------------------------
@@ -842,7 +831,7 @@ ScaledBorderAndShadow: yes
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
 Style: Cap,{st['font']},{st['size']},&H00{st['base']},&H00{st['base']},&H00000000,&H00000000,-1,0,0,0,100,100,0,0,1,{st['outline']},0,5,0,0,0,1
-Style: Hook,{st['font']},{HOOK_BOX['size']},&H00{HOOK_BOX['ink']},&H00{HOOK_BOX['ink']},&H00000000,&H00000000,-1,0,0,0,100,100,0,0,1,0,0,5,0,0,0,1
+Style: Hook,{st['font']},{HOOK_BOX['size']},&H00{st.get('hook_ink', HOOK_BOX['ink'])},&H00{st.get('hook_ink', HOOK_BOX['ink'])},&H00000000,&H00000000,-1,0,0,0,100,100,0,0,1,3,0,5,0,0,0,1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
@@ -1017,14 +1006,11 @@ def render_vertical_short(
 
         final_mp4 = out_dir / f"{stem}.mp4"
         final_thumb = out_dir / f"{stem}_thumb.jpg"
+        raw_cover_out = out_dir / f"{stem}_raw_cover.jpg"
         shutil.move(str(work / "out.mp4"), str(final_mp4))
-        build_shorts_thumbnail(
-            frame_jpg=work / "raw_cover.jpg",
-            out_jpg=final_thumb,
-            badge_text=clip.get("hook", "GTA 6 LIVE"),
-            font_path=ttf_path,
-        )
-        return {"mp4": final_mp4, "thumb": final_thumb}
+        shutil.copyfile(str(work / "raw_cover.jpg"), str(raw_cover_out))
+        build_shorts_thumbnail(frame_jpg=raw_cover_out, out_jpg=final_thumb, badge_text=clip.get("hook", "INSANE CLIP"), font_path=ttf_path, theme=style_name)
+        return {"mp4": final_mp4, "thumb": final_thumb, "raw_cover": raw_cover_out, "font_path": ttf_path}
     finally:
         shutil.rmtree(work, ignore_errors=True)
 
@@ -1094,7 +1080,7 @@ if __name__ == "__main__":
     ap.add_argument("--slice-minutes", type=float, default=15.0, help="Minutes of live stream to capture")
     ap.add_argument("--max-clips", type=int, default=2, help="Max vertical Shorts to render per run")
     ap.add_argument("--layout", choices=["blur", "zoom", "crop"], default="blur", help="9:16 framing layout")
-    ap.add_argument("--style", choices=["bounce", "hype", "clean"], default="bounce", help="ASS caption animation style")
+    ap.add_argument("--style", choices=["auto", "vice_hype", "cyber_gold", "rage_neon", "clean_pro", "bounce", "hype", "clean"], default="auto", help="ASS caption style (auto lets AI pick per clip)")
     ap.add_argument("--isolate-voice", action="store_true", help="Filter background radio music frequencies")
     ap.add_argument("--schedule", action="store_true", help="Auto-upload and schedule on YouTube via Step 1")
     ap.add_argument("--self-test", action="store_true", help="Run end-to-end FFmpeg + ASS + Thumbnail render verification")
@@ -1170,9 +1156,28 @@ if __name__ == "__main__":
     scheduled_slots: List[str] = list(cloud_state.get("scheduled_iso_slots") or [])
     golden_hours: List[int] = list(cloud_state.get("golden_hours_utc") or [12, 15, 18, 21, 0, 9])
 
+    if not picks:
+        print("[QUALITY GATE] No viral moments passed threshold this cycle. Sleeping until next run.")
+        save_cloud_state(cloud_state)
+        raise SystemExit(0)
+
+    today_utc = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d")
+    daily_counts = cloud_state.setdefault("daily_uploads", {}).setdefault(today_utc, {"yt": 0, "fb": 0, "ig": 0})
+    max_daily_yt = int(env("MAX_DAILY_YT", "3") or "3")
+    max_daily_fb = int(env("MAX_DAILY_FB", "2") or "2")
+    max_daily_ig = int(env("MAX_DAILY_IG", "2") or "2")
+
+    if args.schedule and daily_counts.get("yt", 0) >= max_daily_yt and daily_counts.get("fb", 0) >= max_daily_fb and daily_counts.get("ig", 0) >= max_daily_ig:
+        print(f"[DAILY CAP REACHED] Already hit optimal daily limits for {today_utc} (YT:{daily_counts['yt']}/{max_daily_yt}, FB:{daily_counts['fb']}/{max_daily_fb}, IG:{daily_counts['ig']}/{max_daily_ig}).")
+        save_cloud_state(cloud_state)
+        raise SystemExit(0)
+
     for idx, clip in enumerate(picks, start=1):
         ts_label = int(time.time())
         stem = f"gta6_{re.sub(r'[^a-zA-Z0-9]', '', ingested['uploader'])[:12]}_{ts_label}_{idx:02d}"
+        chosen_style = clip.get("visual_style") if args.style == "auto" else (clip.get("visual_style") or args.style)
+        if chosen_style not in STYLES:
+            chosen_style = "vice_hype"
         out = render_vertical_short(
             src_mp4=ingested["video_path"],
             out_dir=Path("work/clips"),
@@ -1182,7 +1187,7 @@ if __name__ == "__main__":
             src_w=ingested["width"],
             src_h=ingested["height"],
             layout=args.layout,
-            style_name=args.style,
+            style_name=chosen_style,
             isolate_voice_band=args.isolate_voice,
         )
         clip_transcript = " ".join(w["w"] for w in words if clip["start"] <= w["s"] <= clip["end"])
@@ -1192,7 +1197,8 @@ if __name__ == "__main__":
             hook=clip.get("hook", ""),
             transcript=clip_transcript,
         )
-        build_shorts_thumbnail(out["thumb"], out["thumb"], seo.get("thumbnail_badge") or clip.get("hook", ""))
+        build_shorts_thumbnail(frame_jpg=out["raw_cover"], out_jpg=out["thumb"], badge_text=seo.get("thumbnail_badge") or clip.get("hook", ""), font_path=out.get("font_path"), theme=chosen_style)
+        out["raw_cover"].unlink(missing_ok=True)
         slot_iso = compute_next_publish_slot(
             gap_hours=float(env("POST_GAP_HOURS", "3")),
             existing_iso_slots=scheduled_slots,
@@ -1227,7 +1233,7 @@ if __name__ == "__main__":
             print(f"[{stem}] Saved to Google Drive: {vid_drive_url} | Thumbnail: {thumb_drive_url}")
 
         # 4. Upload and schedule directly on YouTube Studio
-        if args.schedule:
+        if args.schedule and daily_counts.get("yt", 0) < max_daily_yt:
             vid_id, url_short = upload_and_schedule_short(
                 video_path=out["mp4"],
                 thumb_path=out["thumb"],
@@ -1236,14 +1242,15 @@ if __name__ == "__main__":
                 tags=seo["tags"],
                 publish_at_iso=slot_iso,
             )
-            print(f"[{stem}] Scheduled on YouTube Studio: {url_short} (publishAt={slot_iso})")
+            daily_counts["yt"] = daily_counts.get("yt", 0) + 1
+            print(f"[{stem}] Scheduled on YouTube Studio ({daily_counts['yt']}/{max_daily_yt} today): {url_short} (publishAt={slot_iso})")
             if seo.get("pinned_comment"):
                 post_engagement_comment(vid_id, seo["pinned_comment"])
             send_telegram_summary_card(seo["title"], ingested["uploader"], slot_iso, yt_url=url_short)
 
             # 4b. Auto-schedule on Facebook Page Reels (if FB_PAGE_ID & FB_PAGE_ACCESS_TOKEN are set)
             social_cap = build_social_caption(seo, ingested["uploader"])
-            if env("FB_PAGE_ID") and env("FB_PAGE_ACCESS_TOKEN"):
+            if env("FB_PAGE_ID") and env("FB_PAGE_ACCESS_TOKEN") and daily_counts.get("fb", 0) < max_daily_fb:
                 try:
                     fb_id, fb_url = upload_facebook_reel(
                         video_path=out["mp4"],
@@ -1251,18 +1258,20 @@ if __name__ == "__main__":
                         caption=social_cap,
                         publish_at_iso=slot_iso,
                     )
-                    print(f"[{stem}] Scheduled on Facebook Reels: {fb_url} (slot={slot_iso})")
+                    daily_counts["fb"] = daily_counts.get("fb", 0) + 1
+                    print(f"[{stem}] Scheduled on Facebook Reels ({daily_counts['fb']}/{max_daily_fb} today): {fb_url} (slot={slot_iso})")
                 except Exception as exc:
                     print(f"[WARN] Facebook Reels upload skipped/failed: {exc}")
 
             # 4c. Auto-publish on Instagram Reels (if IG_USER_ID is set)
-            if env("IG_USER_ID") and (env("IG_ACCESS_TOKEN") or env("FB_PAGE_ACCESS_TOKEN")):
+            if env("IG_USER_ID") and (env("IG_ACCESS_TOKEN") or env("FB_PAGE_ACCESS_TOKEN")) and daily_counts.get("ig", 0) < max_daily_ig:
                 try:
                     ig_id, ig_url = upload_instagram_reel(
                         video_path=out["mp4"],
                         caption=social_cap,
                     )
-                    print(f"[{stem}] Published on Instagram Reels: {ig_url}")
+                    daily_counts["ig"] = daily_counts.get("ig", 0) + 1
+                    print(f"[{stem}] Published on Instagram Reels ({daily_counts['ig']}/{max_daily_ig} today): {ig_url}")
                 except Exception as exc:
                     print(f"[WARN] Instagram Reels upload skipped/failed: {exc}")
 
