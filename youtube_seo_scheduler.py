@@ -1488,6 +1488,10 @@ def audit_and_enforce_2026_seo_rules(seo: Dict, streamer: str, topic: str) -> Di
             f"What would your reaction be if this happened to you on {streamer}'s stream? "
             f"Drop your rating 1–10 below! 👇"
         )
+    linted = lint_title_and_thumb_pairing(seo["title"], seo["thumbnail_badge"])
+    seo["title"] = linted["title"]
+    seo["thumbnail_badge"] = linted["thumbnail_badge"]
+    seo["packaging_score"] = linted["pairing_score"]
     return seo
 
 
@@ -1752,6 +1756,138 @@ def send_telegram_summary_card(
         return r.status_code == 200
     except Exception:
         return False
+
+
+
+# ---------------------------------------------------------------------------
+# 12. Adopted from `jakeschincariol/youtube-agent-skill`:
+#     - 5-Property Weakest-Link Hook Scorer (`skills/yt-script/hookscore.py` & `hooks.json`)
+#     - Title + Thumbnail Pairing Linter (`skills/yt-package/title.py`: 40c mobile / 60c desktop / 0 overlap)
+#     - Channel Outlier Multiple Ranker (`skills/yt-viral/swipe.py`: views / channel_median_views)
+# ---------------------------------------------------------------------------
+import statistics
+
+_HOOK_FILLER = {"basically", "actually", "literally", "just", "really", "very", "so", "kind", "sort", "like", "guys", "hey", "welcome", "today", "video", "subscribe", "channel"}
+_HOOK_VAGUE = {"amazing", "incredible", "insane", "crazy", "huge", "massive", "game", "changer", "secret", "powerful", "ultimate", "best", "revolutionary", "mind", "blowing", "unbelievable", "epic", "perfect"}
+_STOP_WORDS = {"the", "a", "an", "of", "for", "to", "in", "on", "and", "or", "is", "are", "with", "your", "you", "my", "i", "this", "that", "it", "how", "what", "why"}
+_CONCRETE_RE = re.compile(r"\b(\d[\d,.]*\s?(%|k|m|x|s|h|star|stars)?|\$\d|\d+\s?(second|minute|hour|day|week|month|year)s?)\b", re.I)
+_YOU_RE = re.compile(r"\b(you|your|you're|youre|yourself|bro|chat)\b", re.I)
+_STAKE_RE = re.compile(r"\b(lose|lost|wasting|waste|quit|fail|failed|broke|cost|risk|before|stop|never|die|died|dying|dead|busted|wasted|arrested)\b", re.I)
+_CURIOSITY_RE = re.compile(r"\b(why|how|what|which|until|before|but|nobody|almost|except|reason|wait|watch)\b", re.I)
+
+
+def score_hook_5_properties(hook_text: str) -> Dict:
+    """
+    Adopted from `jakeschincariol/youtube-agent-skill` (`skills/yt-script/hookscore.py`):
+    Scores a hook across 5 properties (SPECIFICITY, ADDRESS, STAKES, CURIOSITY, BREVITY)
+    using weakest-link weighting: `verdict = round(0.6 * mean + 0.4 * min)`.
+    """
+    t = (hook_text or "").strip()
+    w = re.findall(r"[a-z0-9'%$.]+", t.lower())
+    if not w:
+        return {"verdict": 0, "band": "WEAK", "parts": {}}
+
+    nums = len(_CONCRETE_RE.findall(t))
+    vague = sum(1 for x in w if x in _HOOK_VAGUE)
+    filler = sum(1 for x in w if x in _HOOK_FILLER)
+    proper = min(18, 6 * sum(1 for x in t.split()[1:] if x[:1].isupper()))
+    spec = max(0, min(100, 34 + nums * 22 - vague * 16 - filler * 5 + proper))
+
+    you_n = len(_YOU_RE.findall(t))
+    first_you = 30 if _YOU_RE.search(" ".join(t.split()[:6])) else 0
+    addr = max(0, min(100, 26 + you_n * 20 + first_you))
+
+    stake_n = len(_STAKE_RE.findall(t))
+    stak = max(0, min(100, 22 + stake_n * 26 + (14 if _CONCRETE_RE.search(t) else 0)))
+
+    cur_n = len(_CURIOSITY_RE.findall(t))
+    q_bonus = 18 if t.endswith("?") else 0
+    closed_pen = -18 if re.search(r"\b(because|so that|which means)\b", t, re.I) else 0
+    curi = max(0, min(100, 24 + cur_n * 17 + q_bonus + closed_pen))
+
+    nw = len(w)
+    # For on-screen 2-5 word badges or 9-24 word spoken hooks:
+    brev = 100 if (2 <= nw <= 24) else max(20, 100 - abs(nw - 15) * 7)
+
+    parts = {"SPECIFICITY": spec, "ADDRESS": addr, "STAKES": stak, "CURIOSITY": curi, "BREVITY": brev}
+    vals = list(parts.values())
+    verdict = round(0.6 * (sum(vals) / len(vals)) + 0.4 * min(vals))
+    band = "STRONG" if verdict >= 72 else ("WORKABLE" if verdict >= 55 else "WEAK")
+    return {"verdict": verdict, "band": band, "parts": parts}
+
+
+def lint_title_and_thumb_pairing(title: str, thumb_badge: str) -> Dict:
+    """
+    Adopted from `jakeschincariol/youtube-agent-skill` (`skills/yt-package/title.py`):
+    Lints the `(title, thumbnail_badge)` as a single click-surface unit:
+      - Checks 40-char mobile cutoff & 60-char desktop search cutoff
+      - Caps ALL-CAPS words in title at <= 2
+      - Replaces vague adjectives unless paired with a concrete name/number
+      - Enforces ZERO content-word duplication between title and thumbnail_badge
+      - Enforces <= 3 words on thumbnail_badge
+    """
+    t = re.sub(r"\s+", " ", (title or "").strip())
+    tb = re.sub(r"\s+", " ", (thumb_badge or "").strip().upper())
+    t_words = re.findall(r"[a-z0-9']+", t.lower())
+    tb_words = re.findall(r"[a-z0-9']+", tb.lower())
+
+    issues = []
+    good = []
+
+    if len(t) > 100:
+        issues.append("hard-limit-100")
+    elif len(t) > 60:
+        issues.append("desktop-60-cut")
+    else:
+        good.append("fits-desktop-60")
+
+    # Cap ALL-CAPS words in title (excluding #Shorts/#GTA6 hashtags) at <= 2
+    non_hash_words = [w for w in t.split() if not w.startswith("#")]
+    caps_words = [w for w in non_hash_words if len(w) > 2 and w.isupper()]
+    if len(caps_words) > 2:
+        fixed_words = []
+        caps_seen = 0
+        for w in t.split():
+            if not w.startswith("#") and len(w) > 2 and w.isupper():
+                caps_seen += 1
+                if caps_seen > 2:
+                    w = w.capitalize()
+            fixed_words.append(w)
+        t = " ".join(fixed_words)
+
+    # Check title vs thumbnail word duplication
+    shared = (set(t_words) - _STOP_WORDS) & (set(tb_words) - _STOP_WORDS)
+    if shared:
+        issues.append(f"duplicate-words:{','.join(sorted(shared))}")
+        # Automatically de-duplicate thumbnail badge so it complements the title
+        alt_badges = ["WAIT FOR IT", "UNREAL PAYOFF", "PURE CHAOS", "INSTANT REGRET", "NO WAY"]
+        for cand in alt_badges:
+            cand_w = set(re.findall(r"[a-z0-9']+", cand.lower())) - _STOP_WORDS
+            if not (cand_w & (set(t_words) - _STOP_WORDS)):
+                tb = cand
+                break
+    else:
+        good.append("zero-duplication")
+
+    # Enforce <= 3 words on thumbnail badge
+    if len(tb.split()) > 3:
+        tb = " ".join(tb.split()[:3])
+
+    score = max(0, min(100, 100 - 14 * len(issues) + 4 * len(good)))
+    return {"title": t, "thumbnail_badge": tb, "pairing_score": score, "issues": issues}
+
+
+def compute_channel_outlier_multiple(video_views: int, recent_channel_views: List[int]) -> float:
+    """
+    Adopted from `jakeschincariol/youtube-agent-skill` (`skills/yt-viral/swipe.py`):
+    Scores a video as a multiple of its OWN channel's median views (`views / median`).
+    A 3.0x+ outlier on a channel means something extraordinary happened in that stream!
+    """
+    clean = [float(v) for v in (recent_channel_views or []) if float(v or 0) > 0]
+    if len(clean) < 3:
+        return 1.0
+    med = statistics.median(clean)
+    return round(float(video_views or 0) / max(1.0, med), 2)
 
 
 if __name__ == "__main__":

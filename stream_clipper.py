@@ -190,6 +190,148 @@ def ingest_from_google_drive(work_dir: Path, access_token: Optional[str] = None)
     }
 
 
+
+# ---------------------------------------------------------------------------
+# 2b. 10-Second Live Chat Explosion Spike Detector + 22-Second Pre-Roll Lookback
+#     + Dead-Air / Filler Trimmer (`jakeschincariol/youtube-agent-skill/skills/yt-edit/deadair.py`)
+# ---------------------------------------------------------------------------
+import socket
+import ssl
+import threading
+
+CHAT_BUCKET_SEC = 10          # Count chat messages in 10-second windows
+PRE_SPIKE_ROLLBACK_SEC = 22.0 # Start the clip 22s BEFORE the chat spike (screen happens first, chat reacts after!)
+POST_SPIKE_TAIL_SEC = 16.0    # Keep 16s after the spike peak to capture the streamer + chat aftermath
+_FILLER_ONLY_RE = re.compile(
+    r"^[\s,.-]*((um+|uh+|er+|ah+|so|okay|ok|right|yeah|like|anyway|basically|actually|you know|i mean|hold on)[\s,.-]*)+$",
+    re.I,
+)
+
+
+def _record_twitch_irc_buckets(channel_login: str, duration_sec: int, stop_event: threading.Event, buckets: Dict[int, int]) -> None:
+    """
+    Connects anonymously to `irc.chat.twitch.tv:6697` during a live Twitch stream capture
+    and counts incoming chat messages in 10-second buckets (`int(elapsed // 10)`).
+    """
+    t0 = time.time()
+    try:
+        raw = socket.create_connection(("irc.chat.twitch.tv", 6697), timeout=15)
+        sock = ssl.create_default_context().wrap_socket(raw, server_hostname="irc.chat.twitch.tv")
+        sock.sendall(f"NICK justinfan{int(t0) % 89999 + 10000}\r\nJOIN #{channel_login.lower()}\r\n".encode("utf-8"))
+        sock.settimeout(5.0)
+        buf = b""
+        while not stop_event.is_set() and (time.time() - t0) < duration_sec:
+            try:
+                chunk = sock.recv(8192)
+            except socket.timeout:
+                continue
+            if not chunk:
+                break
+            *lines, buf = (buf + chunk).split(b"\r\n")
+            elapsed = max(0.0, time.time() - t0)
+            b_idx = int(elapsed // CHAT_BUCKET_SEC)
+            for ln in lines:
+                if ln.startswith(b"PING"):
+                    sock.sendall(b"PONG :tmi.twitch.tv\r\n")
+                elif b" PRIVMSG #" in ln:
+                    buckets[b_idx] = buckets.get(b_idx, 0) + 1
+        sock.close()
+    except Exception:
+        pass
+
+
+def parse_yt_live_chat_replay_buckets(work_dir: Path) -> Dict[int, int]:
+    """
+    Parses `yt-dlp` downloaded `.live_chat.json` replay files (if present) into 10-second message count buckets.
+    """
+    buckets: Dict[int, int] = {}
+    for chat_file in work_dir.glob("*live_chat*.json*"):
+        try:
+            for line in chat_file.read_text(encoding="utf-8", errors="ignore").splitlines():
+                if not line.strip():
+                    continue
+                obj = json.loads(line)
+                offset_ms = (
+                    obj.get("videoOffsetTimeMsec")
+                    or (obj.get("replayChatItemAction") or {}).get("videoOffsetTimeMsec")
+                )
+                if offset_ms is not None:
+                    sec = max(0.0, float(offset_ms) / 1000.0)
+                    b_idx = int(sec // CHAT_BUCKET_SEC)
+                    buckets[b_idx] = buckets.get(b_idx, 0) + 1
+        except Exception:
+            continue
+    return buckets
+
+
+def detect_10s_chat_explosion_spikes(
+    chat_buckets: Dict[int, int],
+    total_duration_sec: float,
+    pre_roll_sec: float = PRE_SPIKE_ROLLBACK_SEC,
+    post_tail_sec: float = POST_SPIKE_TAIL_SEC,
+) -> List[Dict]:
+    """
+    Analyzes 10-second chat message buckets (`chat_buckets[bucket_idx] = msg_count`).
+    When a 10s bucket explodes (>= 2.5x rolling median or Z-score >= 2.2), it computes:
+      - `spike_sec`: exact timestamp where chat exploded (`bucket_idx * 10`)
+      - `clip_start`: `max(0.0, spike_sec - pre_roll_sec)` (22s BEFORE the chat spike, when the visual happened on screen!)
+      - `clip_end`: `min(total_duration_sec, spike_sec + post_tail_sec)`
+    """
+    if not chat_buckets:
+        return []
+    max_b = max(int(total_duration_sec // CHAT_BUCKET_SEC), max(chat_buckets.keys(), default=0))
+    counts = np.array([float(chat_buckets.get(i, 0)) for i in range(max_b + 1)], dtype=np.float32)
+    if len(counts) < 3 or float(counts.max()) < 5.0:
+        return []
+
+    non_zero = counts[counts > 0]
+    med = float(np.median(non_zero)) if len(non_zero) else 1.0
+    mad = float(np.median(np.abs(non_zero - med))) * 1.4826 if len(non_zero) > 2 else max(1.0, med * 0.5)
+    mad = max(1.0, mad)
+
+    spikes: List[Dict] = []
+    last_spike_sec = -999.0
+    for b_idx, msg_count in enumerate(counts):
+        z = (msg_count - med) / mad
+        ratio = msg_count / max(1.0, med)
+        spike_sec = float(b_idx * CHAT_BUCKET_SEC)
+        if (z >= 2.2 or ratio >= 2.5) and msg_count >= 8 and (spike_sec - last_spike_sec) >= 35.0:
+            clip_start = round(max(0.0, spike_sec - pre_roll_sec), 2)
+            clip_end = round(min(total_duration_sec, spike_sec + post_tail_sec), 2)
+            if clip_end - clip_start < 20.0:
+                clip_end = round(min(total_duration_sec, clip_start + 32.0), 2)
+            spikes.append({
+                "spike_sec": spike_sec,
+                "clip_start": clip_start,
+                "clip_end": clip_end,
+                "msgs_in_10s": int(msg_count),
+                "jump_multiple": round(ratio, 2),
+                "z_score": round(float(z), 2),
+            })
+            last_spike_sec = spike_sec
+
+    spikes.sort(key=lambda s: (s["msgs_in_10s"], s["jump_multiple"]), reverse=True)
+    return spikes
+
+
+def trim_dead_air_and_fillers(words: List[Dict], start: float, end: float) -> Tuple[float, float]:
+    """
+    Adopted from `jakeschincariol/youtube-agent-skill` (`skills/yt-edit/deadair.py`):
+    Trims leading/trailing filler-only words ("um", "uh", "hold on") and dead-air gaps > 0.6s
+    at the edges of the clip so the first frame hooks immediately.
+    """
+    inside = [w for w in words if start <= w["s"] <= end and str(w.get("w", "")).strip()]
+    while len(inside) > 3 and _FILLER_ONLY_RE.match(inside[0]["w"]):
+        inside.pop(0)
+    while len(inside) > 3 and _FILLER_ONLY_RE.match(inside[-1]["w"]):
+        inside.pop()
+    if not inside:
+        return start, end
+    new_s = max(start, round(inside[0]["s"] - 0.15, 2))
+    new_e = min(end, round(inside[-1]["e"] + 0.25, 2))
+    return (new_s, new_e) if (new_e - new_s) >= 4.0 else (start, end)
+
+
 def _ydl_base_opts() -> Dict:
     opts: Dict = {
         "noplaylist": True,
@@ -235,6 +377,18 @@ def capture_stream_slice(
         stream_urls = [f["url"] for f in fmts if f.get("url")]
 
         dur_sec = max(30, int(slice_minutes * 60))
+        chat_buckets: Dict[int, int] = {}
+        stop_chat = threading.Event()
+        m_tw = re.match(r"^https?://(?:www\.)?twitch\.tv/([A-Za-z0-9_]+)", url)
+        chat_thread = None
+        if m_tw:
+            chat_thread = threading.Thread(
+                target=_record_twitch_irc_buckets,
+                args=(m_tw.group(1), dur_sec, stop_chat, chat_buckets),
+                daemon=True,
+            )
+            chat_thread.start()
+
         cmd = ["ffmpeg", "-y", "-v", "error", "-reconnect", "1", "-reconnect_streamed", "1"]
         for u in stream_urls:
             cmd += ["-i", u]
@@ -248,7 +402,12 @@ def capture_stream_slice(
             "-movflags", "+faststart",
             str(src_mp4),
         ]
-        run_cmd(cmd, timeout=dur_sec + 180)
+        try:
+            run_cmd(cmd, timeout=dur_sec + 180)
+        finally:
+            stop_chat.set()
+            if chat_thread:
+                chat_thread.join(timeout=3.0)
         native_words = None
     else:
         dl_opts = {
@@ -264,6 +423,7 @@ def capture_stream_slice(
             raise RuntimeError("VOD download completed but produced no media file.")
         src_mp4 = candidates[0]
         native_words = try_youtube_json3_words(info)
+        chat_buckets = parse_yt_live_chat_replay_buckets(work_dir)
 
     probe = probe_video(src_mp4)
     return {
@@ -275,6 +435,7 @@ def capture_stream_slice(
         "height": probe["height"],
         "duration": probe["duration"],
         "native_words": native_words,
+        "chat_buckets": chat_buckets,
         "drive_file_id": None,
         "drive_file_name": None,
     }
@@ -536,8 +697,12 @@ def pick_viral_gta6_moments(
     max_clips: int = 2,
     min_len: int = 22,
     max_len: int = 55,
+    chat_buckets: Optional[Dict[int, int]] = None,
 ) -> List[Dict]:
     z = loud_zscore(db)
+    total_dur_est = float(len(db)) if len(db) else (words[-1]['e'] if words else 60.0)
+    chat_spikes = detect_10s_chat_explosion_spikes(chat_buckets or {}, total_dur_est)
+    chat_pre_roll_secs = {int(s['clip_start']): s for s in chat_spikes}
     lines: List[str] = []
     cur_line: List[str] = []
     line_start = 0.0
@@ -549,6 +714,9 @@ def pick_viral_gta6_moments(
         if len(cur_line) >= 12 or w["w"].endswith((".", "!", "?")):
             sec_idx = min(len(z) - 1, max(0, int(line_start))) if len(z) else 0
             loud_tag = " (LOUD)" if (len(z) and float(z[sec_idx : sec_idx + 4].max(initial=0.0)) >= 1.35) else ""
+            chat_hit = next((cs for cs in chat_spikes if abs(line_start - cs["clip_start"]) <= 8.0), None)
+            if chat_hit:
+                loud_tag += f" (CHAT EXPLODED {chat_hit['msgs_in_10s']} MSGS/10s AT {chat_hit['spike_sec']:.0f}s -> START CLIP HERE 22s BEFORE SPIKE!)"
             lines.append(f"[{line_start:.1f}s]{loud_tag} " + " ".join(cur_line))
             cur_line = []
     if cur_line:
@@ -574,9 +742,13 @@ def pick_viral_gta6_moments(
             print(f"[WARN] AI clip scout cascade fell back to loudness peak detector ({exc})")
 
     total_dur = float(len(db)) if len(db) else (words[-1]["e"] if words else 30.0)
-    peak_sec = int(np.argmax(db)) if len(db) else int(total_dur // 2)
-    start_s = max(0.0, float(peak_sec - 12))
-    end_s = min(total_dur, start_s + min(max_len, max(min_len, 30)))
+    if chat_spikes:
+        top_cs = chat_spikes[0]
+        start_s, end_s = top_cs["clip_start"], top_cs["clip_end"]
+    else:
+        peak_sec = int(np.argmax(db)) if len(db) else int(total_dur // 2)
+        start_s = max(0.0, float(peak_sec - 12))
+        end_s = min(total_dur, start_s + min(max_len, max(min_len, 30)))
     if end_s - start_s < 5.0:
         start_s, end_s = 0.0, min(total_dur, 30.0)
     return [
@@ -979,7 +1151,7 @@ if __name__ == "__main__":
     # 2. Extract audio, transcribe, and pick top viral moments
     pcm, db = extract_16k_wav(ingested["video_path"], work / "audio.wav")
     words = ingested["native_words"] or transcribe_audio(work / "audio.wav", pcm)
-    picks = pick_viral_gta6_moments(words, db, ingested["title"], ingested["uploader"], max_clips=args.max_clips)
+    picks = pick_viral_gta6_moments(words, db, ingested["title"], ingested["uploader"], max_clips=args.max_clips, chat_buckets=ingested.get("chat_buckets"))
 
     should_save_drive = args.save_to_drive or bool(env("GDRIVE_OUTPUT_FOLDER_ID"))
     scheduled_slots: List[str] = list(cloud_state.get("scheduled_iso_slots") or [])
