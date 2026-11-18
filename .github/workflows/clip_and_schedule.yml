@@ -1,14 +1,9 @@
-# Ultimate 24/7 Autonomous YouTube Gaming Discovery, Clipping, Heatmap Analytics & Scheduling Workflow
-# Save this file in your repository as: .github/workflows/clip_and_schedule.yml
-
 name: 24-7 Autonomous Gaming Shorts & Heatmap Scheduler
 
 on:
-  # Runs automatically every 30 minutes, 24/7 (even while you sleep)
   schedule:
     - cron: "*/30 * * * *"
 
-  # Manual 1-click trigger from the GitHub Actions tab
   workflow_dispatch:
     inputs:
       stream_url:
@@ -58,8 +53,11 @@ jobs:
       IG_USER_ID: ${{ secrets.IG_USER_ID }}
       IG_ACCESS_TOKEN: ${{ secrets.IG_ACCESS_TOKEN }}
       YT_PROXY: ${{ secrets.YT_PROXY }}
+      YT_COOKIES_B64: ${{ secrets.YT_COOKIES_B64 }}
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
       POST_GAP_HOURS: "3"
-      TOPIC_NICHE: ${{ inputs.topic_niche || vars.TOPIC_NICHE || 'auto' }}
+      TOPIC_NICHE: ${{ github.event.inputs.topic_niche || vars.TOPIC_NICHE || 'auto' }}
 
     steps:
       - name: Checkout repository
@@ -81,7 +79,7 @@ jobs:
       - name: Install Python dependencies
         run: |
           pip install --upgrade pip
-          pip install httpx==0.28.1 numpy==2.2.6 pillow==11.3.0 sherpa-onnx==2.0.1 yt-dlp
+          pip install -r requirements.txt
 
       - name: Cache Sherpa-ONNX Parakeet 0.6B speech model & 24/7 State Ledger
         uses: actions/cache@v4
@@ -98,19 +96,29 @@ jobs:
         run: |
           if [ ! -f "models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8/tokens.txt" ]; then
             mkdir -p models
-            curl -L -o models/model.tar.bz2               "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8.tar.bz2"
+            curl -L -o models/model.tar.bz2 \
+              "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8.tar.bz2"
             tar -xjf models/model.tar.bz2 -C models/
             rm -f models/model.tar.bz2
           fi
 
       - name: Restore optional YouTube cookies (if configured in Secrets)
-        if: ${{ secrets.YT_COOKIES_B64 != '' }}
-        env:
-          YT_COOKIES_B64: ${{ secrets.YT_COOKIES_B64 }}
         run: |
-          echo "$YT_COOKIES_B64" | base64 -d > "$RUNNER_TEMP/yt_cookies.txt"
-          echo "YT_COOKIES_FILE=$RUNNER_TEMP/yt_cookies.txt" >> $GITHUB_ENV
+          if [ -n "$YT_COOKIES_B64" ]; then
+            echo "$YT_COOKIES_B64" | base64 -d > "$RUNNER_TEMP/yt_cookies.txt"
+            echo "YT_COOKIES_FILE=$RUNNER_TEMP/yt_cookies.txt" >> $GITHUB_ENV
+          fi
 
       - name: Run 24/7 Autonomous Discovery, Analytics Heatmap Update, Clipping & Scheduling
         run: |
-          python3 stream_clipper.py             --auto-24x7             --url "${{ inputs.stream_url || '' }}"             --topic "${{ inputs.topic_niche || 'auto' }}"             --slice-minutes "${{ inputs.slice_minutes || '15' }}"             --max-clips "${{ inputs.max_clips || '2' }}"             --layout "${{ inputs.layout || 'blur' }}"             --style "${{ inputs.style || 'bounce' }}"             --isolate-voice             --save-to-drive             --schedule
+          python3 stream_clipper.py \
+            --auto-24x7 \
+            --url "${{ github.event.inputs.stream_url || '' }}" \
+            --topic "${{ github.event.inputs.topic_niche || 'auto' }}" \
+            --slice-minutes "${{ github.event.inputs.slice_minutes || '15' }}" \
+            --max-clips "${{ github.event.inputs.max_clips || '2' }}" \
+            --layout "${{ github.event.inputs.layout || 'blur' }}" \
+            --style "${{ github.event.inputs.style || 'bounce' }}" \
+            --isolate-voice \
+            --save-to-drive \
+            --schedule
