@@ -116,62 +116,72 @@ refresh_youtube_access_token = refresh_google_access_token
 # 2b. Multi-Model Free-Tier Cascade & Daily Viral Trend Researcher
 #     (gemini-2.5-flash [250 RPD] -> gemini-2.5-flash-lite [1,000 RPD] -> Groq [1,000 RPD])
 # ---------------------------------------------------------------------------
-FREE_GEMINI_MODELS = ["gemini-2.5-flash", "gemini-2.5-flash-lite"]
+FREE_GEMINI_MODELS = ["gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.0-flash", "gemini-1.5-flash"]
+
+
+def _resolve_ai_keys(explicit_ai_key: Optional[str] = None) -> Tuple[str, str]:
+    candidates = [
+        (explicit_ai_key or "").strip().strip('"').strip("'"),
+        env("AI_API_KEY").strip().strip('"').strip("'"),
+        env("GROQ_API_KEY").strip().strip('"').strip("'"),
+    ]
+    gemini_key = next((k for k in candidates if k.startswith("AIza")), "")
+    groq_key = next((k for k in candidates if k.startswith("gsk_")), "")
+    if not gemini_key and candidates[1] and not candidates[1].startswith("gsk_"):
+        gemini_key = candidates[1]
+    if not groq_key and candidates[2] and not candidates[2].startswith("AIza"):
+        groq_key = candidates[2]
+    return gemini_key, groq_key
 
 
 def call_gemini_json_with_cascade(prompt: str, schema: Dict, ai_key: Optional[str] = None) -> Dict:
-    """
-    Calls Gemini Free Tier starting with `gemini-2.5-flash` (250 RPD free) and automatically
-    cascades to `gemini-2.5-flash-lite` (1,000 RPD free) and Groq (`llama-3.3-70b-versatile`)
-    if a 429 rate limit occurs—giving 1,250+ free AI requests/day at $0 cost.
-    """
-    key = ai_key or env("AI_API_KEY")
+    key, groq_key = _resolve_ai_keys(ai_key)
     last_err = None
+    req_keys = schema.get("required") or list((schema.get("properties") or {}).keys())
+    full_prompt = f"{prompt}\n\nReturn ONLY a valid JSON object containing these exact keys: {json.dumps(req_keys)}"
+
     if key:
         for model_name in FREE_GEMINI_MODELS:
             url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent"
-            payload = {
-                "contents": [{"parts": [{"text": prompt}]}],
-                "generationConfig": {
-                    "temperature": 0.35,
-                    "responseMimeType": "application/json",
-                    "responseSchema": schema,
-                },
-            }
+            for use_schema in (True, False):
+                gen_cfg: Dict = {"temperature": 0.35, "responseMimeType": "application/json"}
+                if use_schema and schema:
+                    gen_cfg["responseSchema"] = schema
+                payload = {"contents": [{"parts": [{"text": full_prompt}]}], "generationConfig": gen_cfg}
+                try:
+                    r = httpx.post(url, params={"key": key}, json=payload, timeout=45)
+                    if r.status_code == 429:
+                        break
+                    if r.status_code == 400 and use_schema:
+                        continue
+                    r.raise_for_status()
+                    text = r.json()["candidates"][0]["content"]["parts"][0]["text"]
+                    return extract_json_payload(text)
+                except Exception as exc:
+                    last_err = exc
+                    break
+
+    if groq_key:
+        for groq_model in ("llama-3.3-70b-versatile", "llama-3.1-8b-instant"):
             try:
-                r = httpx.post(url, params={"key": key}, json=payload, timeout=45)
-                if r.status_code == 429:
-                    print(f"[RATE LIMIT] {model_name} hit 429 quota, cascading to next free model...")
-                    continue
+                r = httpx.post(
+                    "https://api.groq.com/openai/v1/chat/completions",
+                    headers={"Authorization": f"Bearer {groq_key}", "Content-Type": "application/json", "User-Agent": "RazonGamerzBot/2.0"},
+                    json={
+                        "model": groq_model,
+                        "response_format": {"type": "json_object"},
+                        "messages": [
+                            {"role": "system", "content": f"Return ONLY valid JSON with keys: {json.dumps(req_keys)}"},
+                            {"role": "user", "content": full_prompt},
+                        ],
+                        "temperature": 0.3,
+                    },
+                    timeout=45,
+                )
                 r.raise_for_status()
-                text = r.json()["candidates"][0]["content"]["parts"][0]["text"]
-                return extract_json_payload(text)
+                return extract_json_payload(r.json()["choices"][0]["message"]["content"])
             except Exception as exc:
                 last_err = exc
-                continue
-
-    # Optional 3rd-stage free fallback: Groq llama-3.3-70b-versatile
-    groq_key = env("GROQ_API_KEY")
-    if groq_key:
-        try:
-            r = httpx.post(
-                "https://api.groq.com/openai/v1/chat/completions",
-                headers={"Authorization": f"Bearer {groq_key}"},
-                json={
-                    "model": "llama-3.3-70b-versatile",
-                    "response_format": {"type": "json_object"},
-                    "messages": [
-                        {"role": "system", "content": f"Return ONLY valid JSON matching this schema: {json.dumps(schema)}"},
-                        {"role": "user", "content": prompt},
-                    ],
-                    "temperature": 0.3,
-                },
-                timeout=45,
-            )
-            r.raise_for_status()
-            return extract_json_payload(r.json()["choices"][0]["message"]["content"])
-        except Exception as exc:
-            last_err = exc
 
     raise RuntimeError(f"All free AI models exhausted or unavailable: {last_err}")
 
@@ -232,6 +242,36 @@ def research_daily_viral_trends(state: Dict, topic_hint: str = "auto") -> Dict:
 # ---------------------------------------------------------------------------
 # 3. Persistent Cloud State Ledger (Deduplication + Heatmap Storage in Drive)
 # ---------------------------------------------------------------------------
+_APP_FOLDER_CACHE: Dict[str, str] = {}
+
+
+def _get_or_create_app_drive_folder(folder_name: str, token: str) -> str:
+    if folder_name in _APP_FOLDER_CACHE:
+        return _APP_FOLDER_CACHE[folder_name]
+    q = f"name = '{folder_name}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false"
+    r = httpx.get(
+        DRIVE_FILES_URL,
+        params={"q": q, "pageSize": 1, "fields": "files(id, name)", "supportsAllDrives": "true", "includeItemsFromAllDrives": "true"},
+        headers={"Authorization": f"Bearer {token}"},
+        timeout=20,
+    )
+    files = (r.json().get("files") or []) if r.status_code == 200 else []
+    if files:
+        _APP_FOLDER_CACHE[folder_name] = files[0]["id"]
+        return files[0]["id"]
+    cr = httpx.post(
+        DRIVE_FILES_URL,
+        params={"fields": "id, name", "supportsAllDrives": "true"},
+        json={"name": folder_name, "mimeType": "application/vnd.google-apps.folder"},
+        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+        timeout=20,
+    )
+    if cr.status_code < 400 and cr.json().get("id"):
+        _APP_FOLDER_CACHE[folder_name] = cr.json()["id"]
+        return cr.json()["id"]
+    return ""
+
+
 def extract_drive_folder_id(folder_id_or_url: str) -> str:
     raw = (folder_id_or_url or "").strip()
     m = re.search(r"/folders/([a-zA-Z0-9_-]+)", raw)
@@ -464,6 +504,111 @@ def _search_youtube_live_by_keyword(query: str, state: Dict, token: str) -> Opti
     return None
 
 
+KNOWN_SIMULCAST_MAP: Dict[str, str] = {
+    "@ishowspeed": "https://www.twitch.tv/ishowspeed",
+    "@typicalgamer": "https://www.twitch.tv/typicalgamer",
+    "@kaicenatlive": "https://www.twitch.tv/kaicenat",
+    "@kaicenat": "https://www.twitch.tv/kaicenat",
+    "@caseoh": "https://www.twitch.tv/caseoh_",
+    "@xqcow": "https://www.twitch.tv/xqc",
+    "@valkyrae": "https://www.twitch.tv/valkyrae",
+    "@shroud": "https://www.twitch.tv/shroud",
+    "@tarik": "https://www.twitch.tv/tarik",
+    "@jynxzi": "https://www.twitch.tv/jynxzi",
+}
+
+PREFERRED_TWITCH_GAMING_LOGINS: List[str] = [
+    "kaicenat", "caseoh_", "xqc", "valkyrae", "ishowspeed", "typicalgamer",
+    "jynxzi", "shroud", "tarik", "stableronaldo", "lacy", "jasontheween",
+    "plaqueboymax", "agent00", "fanum", "summit1g", "lirik", "clix",
+    "ohnepixel", "caedrel", "fuslie", "sykkuno", "iitztimmy", "imperialhal",
+    "nicewigg", "nickeh30", "symfuhny", "tenz", "squeex", "extraemily",
+]
+
+
+def discover_live_twitch_stream(state: Optional[Dict] = None, preferred_url: str = "") -> Optional[Dict]:
+    st = state if state is not None else {}
+    now_bucket = int(time.time() // 1800)
+    processed = set(st.get("processed_keys") or [])
+    gql_url = "https://gql.twitch.tv/gql"
+    headers = {"Client-Id": "kimne78kx3ncx6brgo4mv6wki5h1ko", "Content-Type": "application/json"}
+
+    logins_to_check: List[str] = []
+    if preferred_url:
+        m = re.search(r"twitch\.tv/([A-Za-z0-9_]+)", preferred_url)
+        if m:
+            logins_to_check.append(m.group(1).lower())
+    for lg in PREFERRED_TWITCH_GAMING_LOGINS:
+        if lg.lower() not in logins_to_check:
+            logins_to_check.append(lg.lower())
+
+    aliases = [
+        f'u{i}: user(login: "{lg}") {{ login displayName stream {{ id title viewersCount game {{ name }} }} }}'
+        for i, lg in enumerate(logins_to_check[:30])
+    ]
+    try:
+        r = httpx.post(gql_url, headers=headers, json={"query": "query { " + " ".join(aliases) + " }"}, timeout=15)
+        if r.status_code == 200:
+            data = (r.json().get("data") or {})
+            live_candidates = []
+            for i in range(len(aliases)):
+                u = data.get(f"u{i}") or {}
+                s = u.get("stream")
+                if s and s.get("id"):
+                    login = u.get("login", "")
+                    dedup_key = f"twitch:{login}:{now_bucket}"
+                    if dedup_key in processed:
+                        continue
+                    is_pref = 1 if (preferred_url and login.lower() == logins_to_check[0]) else 0
+                    viewers = int(s.get("viewersCount") or 0)
+                    game_name = (s.get("game") or {}).get("name") or "Gaming"
+                    live_candidates.append((is_pref, viewers, {
+                        "url": f"https://www.twitch.tv/{login}",
+                        "video_id": str(s.get("id")),
+                        "title": f"{s.get('title') or game_name} ({game_name})",
+                        "uploader": u.get("displayName") or login,
+                        "is_live": True,
+                        "dedup_key": dedup_key,
+                        "fallback_url": "",
+                    }))
+            if live_candidates:
+                live_candidates.sort(key=lambda item: (item[0], item[1]), reverse=True)
+                best = live_candidates[0][2]
+                print(f"[TWITCH LIVE DISCOVERY] Found active stream @{best['uploader']} ({live_candidates[0][1]:,} viewers): {best['title']} ({best['url']})")
+                return best
+    except Exception as exc:
+        print(f"[WARN] Twitch preferred batch lookup error: {exc}")
+
+    top_query = """query { streams(first: 15, options: {broadcasterLanguages: ["en"]}) { edges { node { id title viewersCount broadcaster { login displayName } game { name } } } } }"""
+    try:
+        r = httpx.post(gql_url, headers=headers, json={"query": top_query}, timeout=15)
+        if r.status_code == 200:
+            for edge in (((r.json().get("data") or {}).get("streams") or {}).get("edges") or []):
+                node = edge.get("node") or {}
+                bc = node.get("broadcaster") or {}
+                login = bc.get("login") or ""
+                if not login:
+                    continue
+                dedup_key = f"twitch:{login}:{now_bucket}"
+                if dedup_key in processed:
+                    continue
+                game_name = (node.get("game") or {}).get("name") or "Gaming"
+                hit = {
+                    "url": f"https://www.twitch.tv/{login}",
+                    "video_id": str(node.get("id") or login),
+                    "title": f"{node.get('title') or game_name} ({game_name})",
+                    "uploader": bc.get("displayName") or login,
+                    "is_live": True,
+                    "dedup_key": dedup_key,
+                    "fallback_url": "",
+                }
+                print(f"[TWITCH TOP LIVE] Found top active stream @{hit['uploader']}: {hit['title']} ({hit['url']})")
+                return hit
+    except Exception as exc:
+        print(f"[WARN] Twitch top streams lookup error: {exc}")
+    return None
+
+
 def discover_active_stream(
     watchlist_path: Path = Path("watchlist.txt"),
     state: Optional[Dict] = None,
@@ -498,7 +643,7 @@ def discover_active_stream(
         if entry.startswith("@"):
             parts = [p.strip() for p in entry.split("|", 1)]
             handle = parts[0]
-            fallback_url = parts[1] if len(parts) > 1 else ""
+            fallback_url = parts[1] if len(parts) > 1 else KNOWN_SIMULCAST_MAP.get(handle.lower(), "")
             if token:
                 cid = _resolve_youtube_channel_id(handle, st, token)
                 if cid:
@@ -729,6 +874,8 @@ def drive_list_inbox_videos(
         headers={"Authorization": f"Bearer {token}"},
         timeout=30,
     )
+    if r.status_code == 404:
+        return []
     if r.status_code >= 400:
         raise RuntimeError(f"Google Drive inbox list failed ({r.status_code}): {r.text[:300]}")
     return r.json().get("files") or []
@@ -789,6 +936,18 @@ def drive_upload_file(
         },
         timeout=60,
     )
+    if init_res.status_code == 404:
+        app_folder = _get_or_create_app_drive_folder("RazonGamerz_Output", token)
+        meta["parents"] = [app_folder] if app_folder else []
+        if not app_folder:
+            meta.pop("parents", None)
+        init_res = httpx.post(
+            DRIVE_UPLOAD_URL,
+            params={"uploadType": "resumable", "fields": "id, name, webViewLink", "supportsAllDrives": "true"},
+            json=meta,
+            headers={"Authorization": f"Bearer {token}", "X-Upload-Content-Type": mime_type, "X-Upload-Content-Length": str(size)},
+            timeout=60,
+        )
     if init_res.status_code >= 400:
         raise RuntimeError(f"Drive resumable upload init failed ({init_res.status_code}): {init_res.text[:300]}")
 

@@ -43,6 +43,7 @@ from youtube_seo_scheduler import (
     research_daily_viral_trends,
     compute_next_publish_slot,
     discover_active_stream,
+    discover_live_twitch_stream,
     drive_download_file,
     drive_list_inbox_videos,
     drive_mark_processed,
@@ -389,16 +390,16 @@ def capture_stream_slice(
             )
             chat_thread.start()
 
-        cmd = ["ffmpeg", "-y", "-v", "error", "-reconnect", "1", "-reconnect_streamed", "1"]
+        cmd = ["ffmpeg", "-y", "-v", "error", "-fflags", "+genpts+discardcorrupt", "-reconnect", "1", "-reconnect_streamed", "1"]
         for u in stream_urls:
             cmd += ["-i", u]
-        a_map = "1:a:0" if len(stream_urls) > 1 else "0:a:0"
+        if len(stream_urls) > 1:
+            cmd += ["-map", "0:v:0", "-map", "1:a:0"]
         cmd += [
-            "-map", "0:v:0",
-            "-map", a_map,
             "-t", str(dur_sec),
             "-c:v", "copy",
             "-c:a", "aac",
+            "-bsf:a", "aac_adtstoasc",
             "-movflags", "+faststart",
             str(src_mp4),
         ]
@@ -517,7 +518,9 @@ def extract_16k_wav(video_path: Path, wav_path: Path) -> Tuple[np.ndarray, np.nd
 # 3. Speech-to-Text Transcriber (Groq Whisper Fast-Path + Sherpa-ONNX Parakeet)
 # ---------------------------------------------------------------------------
 def transcribe_audio(wav_path: Path, pcm: np.ndarray) -> List[Dict]:
-    groq_key = env("GROQ_API_KEY")
+    raw_g = env("GROQ_API_KEY").strip().strip('"').strip("'")
+    raw_a = env("AI_API_KEY").strip().strip('"').strip("'")
+    groq_key = raw_g if raw_g.startswith("gsk_") else (raw_a if raw_a.startswith("gsk_") else "")
     if groq_key:
         try:
             with wav_path.open("rb") as f:
@@ -555,10 +558,12 @@ def _transcribe_sherpa_onnx(pcm: np.ndarray) -> List[Dict]:
 
     model_dir = Path(env("ASR_MODEL_DIR", "models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8"))
     if not (model_dir / "tokens.txt").is_file():
-        raise FileNotFoundError(
-            f"Local ASR model not found in {model_dir}. Set GROQ_API_KEY for cloud Whisper "
-            f"or let GitHub Actions cache download Parakeet 0.6B."
-        )
+        print("[ASR] Downloading local Sherpa-ONNX Parakeet 0.6B speech model...")
+        model_dir.parent.mkdir(parents=True, exist_ok=True)
+        tar_path = model_dir.parent / "model.tar.bz2"
+        run_cmd(["curl", "-sSL", "-o", str(tar_path), "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8.tar.bz2"], timeout=300)
+        run_cmd(["tar", "-xjf", str(tar_path), "-C", str(model_dir.parent)], timeout=120)
+        tar_path.unlink(missing_ok=True)
     rec = sherpa_onnx.OfflineRecognizer.from_transducer(
         encoder=str(model_dir / "encoder.int8.onnx"),
         decoder=str(model_dir / "decoder.int8.onnx"),
@@ -1134,14 +1139,22 @@ if __name__ == "__main__":
         try:
             ingested = capture_stream_slice(target_url, work, slice_minutes=args.slice_minutes)
         except Exception as exc:
+            print(f"[CLOUD IP FALLBACK] Primary stream refused ({exc}). Switching to cloud-safe Twitch live stream...")
             if fallback_url:
-                print(f"[FALLBACK] Primary URL refused ({exc}); switching to simulcast {fallback_url}")
-                ingested = capture_stream_slice(fallback_url, work, slice_minutes=args.slice_minutes)
-                if discovered_meta and discovered_meta.get("uploader"):
-                    ingested["uploader"] = discovered_meta["uploader"]
-                    ingested["title"] = discovered_meta["title"]
-            else:
-                raise
+                try:
+                    ingested = capture_stream_slice(fallback_url, work, slice_minutes=args.slice_minutes)
+                    if discovered_meta and discovered_meta.get("uploader"):
+                        ingested["uploader"] = discovered_meta["uploader"]
+                        ingested["title"] = discovered_meta["title"]
+                except Exception as fb_exc:
+                    print(f"[FALLBACK] Simulcast {fallback_url} not live right now ({fb_exc}); scanning live Twitch gaming channels...")
+            if ingested is None:
+                tw_hit = discover_live_twitch_stream(state=cloud_state, preferred_url=fallback_url)
+                if tw_hit:
+                    dedup_key = tw_hit.get("dedup_key", dedup_key)
+                    ingested = capture_stream_slice(tw_hit["url"], work, slice_minutes=args.slice_minutes)
+                    ingested["uploader"] = tw_hit.get("uploader") or ingested["uploader"]
+                    ingested["title"] = tw_hit.get("title") or ingested["title"]
 
     if ingested is None:
         print("[IDLE] No unclipped Drive video or active stream found this cycle. Sleeping until next cron run.")
