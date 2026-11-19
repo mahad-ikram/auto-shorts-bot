@@ -366,8 +366,7 @@ def capture_stream_slice(
         cmd += [
             "-t", str(dur_sec),
             "-c:v", "copy",
-            "-c:a", "aac",
-            "-bsf:a", "aac_adtstoasc",
+            "-c:a", "aac", "-b:a", "160k", "-ar", "48000", "-ac", "2",
             "-movflags", "+faststart",
             str(src_mp4),
         ]
@@ -651,6 +650,100 @@ def detect_face_center_x(video_path: Path, start: float, dur: float) -> Optional
     except Exception:
         pass
     return None
+
+
+def detect_webcam_corner(video_path: Path, start: float, dur: float) -> Optional[Tuple[int, int, int, int]]:
+    try:
+        import cv2
+        cascade_path = cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
+        if not os.path.exists(cascade_path):
+            return None
+        det = cv2.CascadeClassifier(cascade_path)
+        cap = cv2.VideoCapture(str(video_path))
+        fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+        w_vid = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 1280)
+        h_vid = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 720)
+        hits: List[Tuple[float, float]] = []
+        for frac in (0.15, 0.4, 0.65, 0.85):
+            cap.set(cv2.CAP_PROP_POS_FRAMES, int((start + max(0.3, dur * frac)) * fps))
+            ok, frame = cap.read()
+            if not ok or frame is None:
+                continue
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            faces = det.detectMultiScale(gray, 1.12, 5, minSize=(32, 32))
+            for (fx, fy, fw, fh) in faces:
+                cx = (fx + fw / 2.0) / w_vid
+                cy = (fy + fh / 2.0) / h_vid
+                if cx < 0.34 or cx > 0.66:
+                    hits.append((cx, cy))
+        cap.release()
+        if not hits:
+            return None
+        med_cx = sorted(h[0] for h in hits)[len(hits) // 2]
+        med_cy = sorted(h[1] for h in hits)[len(hits) // 2]
+        cw = max(240, int(w_vid * 0.28) // 2 * 2)
+        ch = max(180, int(h_vid * 0.34) // 2 * 2)
+        x0 = max(0, min(w_vid - cw, int(med_cx * w_vid) - cw // 2))
+        y0 = max(0, min(h_vid - ch, int(med_cy * h_vid) - ch // 2))
+        return (x0, y0, cw, ch)
+    except Exception:
+        return None
+
+
+def verify_clip_with_gemini_vision(video_path: Path, clip: Dict, uploader: str, title: str) -> Dict:
+    import base64
+    from youtube_seo_scheduler import _resolve_ai_keys, extract_json_payload
+    gem_key, _ = _resolve_ai_keys()
+    if not gem_key or not video_path.is_file():
+        return clip
+    start = float(clip.get("start", 0.0))
+    end = float(clip.get("end", start + 25.0))
+    dur = max(4.0, end - start)
+    tmp_dir = Path(tempfile.mkdtemp(prefix="vcheck_"))
+    parts: List[Dict] = []
+    try:
+        for idx, frac in enumerate((0.15, 0.5, 0.85)):
+            t_sec = start + dur * frac
+            jpg = tmp_dir / f"f{idx}.jpg"
+            run_cmd(["ffmpeg", "-y", "-v", "error", "-ss", f"{t_sec:.2f}", "-i", str(video_path), "-frames:v", "1", "-vf", "scale=512:-1", "-q:v", "5", str(jpg)], timeout=20)
+            if jpg.is_file():
+                parts.append({"inline_data": {"mime_type": "image/jpeg", "data": base64.b64encode(jpg.read_bytes()).decode("ascii")}})
+        if not parts:
+            return clip
+        prompt_txt = (
+            f"You are the visual director for gaming Shorts channel RazonGamerz.\n"
+            f"Streamer: {uploader} | Stream: {title} | Proposed hook: {clip.get('hook')}\n"
+            f"Look at these 3 frames from the clip. Answer in strict JSON:\n"
+            f"- visual_ok (boolean): false ONLY if all frames are a static menu, countdown timer, loading screen, or BRB screen with zero gameplay/action.\n"
+            f"- improved_hook (string): 3 to 5 punchy ALL-CAPS words matching what viewers ACTUALLY SEE in these frames (never generic 'WAIT FOR IT' or 'LOST IT').\n"
+            f"- visual_reason (string): 1 short sentence describing what is visible."
+        )
+        parts.append({"text": prompt_txt})
+        r = httpx.post(
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent",
+            params={"key": gem_key},
+            json={"contents": [{"parts": parts}], "generationConfig": {"temperature": 0.25, "responseMimeType": "application/json"}},
+            timeout=35,
+        )
+        if r.status_code == 200:
+            data = extract_json_payload(r.json()["candidates"][0]["content"]["parts"][0]["text"])
+            if isinstance(data, dict):
+                if data.get("visual_ok") is False:
+                    clip["is_boring_or_menu"] = True
+                    clip["score"] = min(int(clip.get("score") or 50), 40)
+                    print(f"[GEMINI VISION] Rejected static/menu clip: {data.get('visual_reason')}")
+                elif data.get("improved_hook"):
+                    new_h = re.sub(r"\s+", " ", str(data["improved_hook"])).strip().upper()[:34]
+                    if new_h and new_h.lower() not in _BANNED_GENERIC_HOOKS:
+                        clip["hook"] = new_h
+                        print(f"[GEMINI VISION] Verified visuals ({data.get('visual_reason')}) -> Hook: {new_h}")
+        else:
+            print(f"[WARN] Gemini Vision HTTP {r.status_code}: {r.text[:180]}")
+    except Exception as exc:
+        print(f"[WARN] Gemini Vision check skipped ({exc})")
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+    return clip
 
 
 def loud_zscore(db: np.ndarray) -> np.ndarray:
@@ -937,7 +1030,23 @@ def render_vertical_short(
     start, end = snap_clip_to_sentences(words, float(clip["start"]), float(clip["end"]))
     ttf_path = _find_system_ttf()
 
-    if layout == "crop" or src_h >= src_w:
+    if layout == "split" and src_w > src_h:
+        cam_box = detect_webcam_corner(src_mp4, start, max(4.0, end - start))
+        if cam_box:
+            cx, cy, cw, ch = cam_box
+            top_h, bot_h = 672, 1248
+            hook_y, cap_y = 672, 1290
+            vf = (
+                f"[0:v]fps={OUT_FPS},split=2[cam_in][game_in];"
+                f"[cam_in]crop={cw}:{ch}:{cx}:{cy},scale={OUT_W}:{top_h}:force_original_aspect_ratio=increase,crop={OUT_W}:{top_h}[top_cam];"
+                f"[game_in]scale={OUT_W}:{bot_h}:force_original_aspect_ratio=increase,crop={OUT_W}:{bot_h}[bot_game];"
+                f"[top_cam][bot_game]vstack=inputs=2,setsar=1[v0];"
+            )
+            print(f"[SPLIT-SCREEN] Detected facecam at ({cx},{cy},{cw}x{ch}) -> Facecam Top + Gameplay Bottom!")
+        else:
+            fg_h, hook_y, cap_y = OUT_H, 310, 1240
+            vf = f"[0:v]fps={OUT_FPS},scale={OUT_W}:{OUT_H}:force_original_aspect_ratio=increase,crop={OUT_W}:{OUT_H},setsar=1[v0];"
+    elif layout == "crop" or src_h >= src_w:
         fg_h, hook_y, cap_y = OUT_H, 310, 1240
         vf = f"[0:v]fps={OUT_FPS},scale={OUT_W}:{OUT_H}:force_original_aspect_ratio=increase,crop={OUT_W}:{OUT_H},setsar=1[v0];"
     else:
@@ -986,7 +1095,7 @@ def render_vertical_short(
                 "-map", "0:a:0",
                 "-af", af,
                 "-c:v", "libx264", "-crf", "21", "-preset", "veryfast", "-pix_fmt", "yuv420p",
-                "-c:a", "aac", "-b:a", "160k", "-ar", "48000",
+                "-c:a", "aac", "-b:a", "160k", "-ar", "48000", "-ac", "2", "-b:a", "160k", "-ar", "48000",
                 "-movflags", "+faststart",
                 "out.mp4",
             ],
@@ -1028,7 +1137,7 @@ def run_self_test() -> None:
                 "ffmpeg", "-y", "-v", "error",
                 "-f", "lavfi", "-i", "testsrc=duration=6:size=1280x720:rate=30",
                 "-f", "lavfi", "-i", "sine=frequency=440:duration=6",
-                "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac",
+                "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "160k", "-ar", "48000", "-ac", "2",
                 str(src_vid),
             ]
         )
@@ -1080,7 +1189,7 @@ if __name__ == "__main__":
     ap.add_argument("--save-to-drive", action="store_true", help="Upload finished Shorts & Thumbnails to GDRIVE_OUTPUT_FOLDER_ID")
     ap.add_argument("--slice-minutes", type=float, default=15.0, help="Minutes of live stream to capture")
     ap.add_argument("--max-clips", type=int, default=2, help="Max vertical Shorts to render per run")
-    ap.add_argument("--layout", choices=["blur", "zoom", "crop"], default="blur", help="9:16 framing layout")
+    ap.add_argument("--layout", choices=["split", "crop", "blur", "zoom"], default="split", help="9:16 framing layout (split = Facecam Top + Gameplay Bottom)")
     ap.add_argument("--style", choices=["auto", "vice_hype", "cyber_gold", "rage_neon", "clean_pro", "bounce", "hype", "clean"], default="auto", help="ASS caption style (auto lets AI pick per clip)")
     ap.add_argument("--isolate-voice", action="store_true", help="Filter background radio music frequencies")
     ap.add_argument("--schedule", action="store_true", help="Auto-upload and schedule on YouTube via Step 1")
@@ -1174,6 +1283,10 @@ if __name__ == "__main__":
         raise SystemExit(0)
 
     for idx, clip in enumerate(picks, start=1):
+        clip = verify_clip_with_gemini_vision(ingested["video_path"], clip, ingested["uploader"], ingested["title"])
+        if clip.get("is_boring_or_menu") and env("FORCE_CLIP", "0") != "1":
+            print(f"[GEMINI VISION] Skipping clip #{idx} (menu/static screen detected).")
+            continue
         ts_label = int(time.time())
         stem = f"gta6_{re.sub(r'[^a-zA-Z0-9]', '', ingested['uploader'])[:12]}_{ts_label}_{idx:02d}"
         chosen_style = clip.get("visual_style") if args.style == "auto" else (clip.get("visual_style") or args.style)

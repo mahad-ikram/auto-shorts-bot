@@ -23,9 +23,9 @@ on:
         required: false
         default: "1"
       layout:
-        description: "Vertical 9:16 framing (blur | zoom | crop)"
+        description: "Vertical 9:16 framing (split | crop | blur | zoom)"
         required: false
-        default: "crop"
+        default: "split"
       style:
         description: "Caption style (auto = AI picks per clip | vice_hype | cyber_gold | rage_neon | clean_pro)"
         required: false
@@ -114,4 +114,4 @@ jobs:
 
       - name: Run 24/7 Autonomous Discovery, Analytics Heatmap Update, Clipping & Scheduling
         run: |
-          python3 stream_clipper.py             --auto-24x7             --url "${{ github.event.inputs.stream_url || '' }}"             --topic "${{ github.event.inputs.topic_niche || 'auto' }}"             --slice-minutes "${{ github.event.inputs.slice_minutes || '12' }}"             --max-clips "${{ github.event.inputs.max_clips || '1' }}"             --layout "${{ github.event.inputs.layout || 'crop' }}"             --style "${{ github.event.inputs.style || 'auto' }}"             --isolate-voice             --save-to-drive             --schedule
+          python3 stream_clipper.py             --auto-24x7             --url "${{ github.event.inputs.stream_url || '' }}"             --topic "${{ github.event.inputs.topic_niche || 'auto' }}"             --slice-minutes "${{ github.event.inputs.slice_minutes || '12' }}"             --max-clips "${{ github.event.inputs.max_clips || '1' }}"             --layout "${{ github.event.inputs.layout || 'split' }}"             --style "${{ github.event.inputs.style || 'auto' }}"             --isolate-voice             --save-to-drive             --schedule
