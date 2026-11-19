@@ -2,7 +2,7 @@ name: 24-7 Autonomous Gaming Shorts & Heatmap Scheduler
 
 on:
   schedule:
-    - cron: "0 */4 * * *"
+    - cron: "17 */2 * * *"
 
   workflow_dispatch:
     inputs:
