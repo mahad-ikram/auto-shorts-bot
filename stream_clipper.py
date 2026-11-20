@@ -358,16 +358,16 @@ def capture_stream_slice(
             )
             chat_thread.start()
 
-        cmd = ["ffmpeg", "-y", "-v", "error", "-fflags", "+genpts+discardcorrupt", "-reconnect", "1", "-reconnect_streamed", "1"]
+        src_mp4 = work_dir / "source.mkv"
+        cmd = ["ffmpeg", "-y", "-v", "error", "-reconnect", "1", "-reconnect_streamed", "1"]
         for u in stream_urls:
             cmd += ["-i", u]
-        if len(stream_urls) > 1:
-            cmd += ["-map", "0:v:0", "-map", "1:a:0"]
+        a_map = "1:a:0" if len(stream_urls) > 1 else "0:a:0"
         cmd += [
+            "-map", "0:v:0", "-map", a_map,
+            "-dn", "-sn",
             "-t", str(dur_sec),
-            "-c:v", "copy",
-            "-c:a", "aac", "-b:a", "160k", "-ar", "48000", "-ac", "2",
-            "-movflags", "+faststart",
+            "-c", "copy",
             str(src_mp4),
         ]
         try:
@@ -720,7 +720,7 @@ def verify_clip_with_gemini_vision(video_path: Path, clip: Dict, uploader: str, 
         )
         parts.append({"text": prompt_txt})
         r = httpx.post(
-            "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent",
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent",
             params={"key": gem_key},
             json={"contents": [{"parts": parts}], "generationConfig": {"temperature": 0.25, "responseMimeType": "application/json"}},
             timeout=35,

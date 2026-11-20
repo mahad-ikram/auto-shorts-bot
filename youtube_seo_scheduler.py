@@ -117,7 +117,7 @@ refresh_youtube_access_token = refresh_google_access_token
 # 2b. Multi-Model Free-Tier Cascade & Daily Viral Trend Researcher
 #     (gemini-2.5-flash [250 RPD] -> gemini-2.5-flash-lite [1,000 RPD] -> Groq [1,000 RPD])
 # ---------------------------------------------------------------------------
-FREE_GEMINI_MODELS = ["gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.0-flash", "gemini-1.5-flash"]
+FREE_GEMINI_MODELS = ["gemini-3.8-flash", "gemini-3.6-flash", "gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-2.5-flash-lite"]
 
 
 def _resolve_ai_keys(explicit_ai_key: Optional[str] = None) -> Tuple[str, str]:
@@ -164,7 +164,7 @@ def call_gemini_json_with_cascade(prompt: str, schema: Dict, ai_key: Optional[st
                     break
 
     if groq_key:
-        for groq_model in ("llama-3.3-70b-versatile", "llama-3.1-8b-instant"):
+        for groq_model in ("openai/gpt-oss-120b", "openai/gpt-oss-20b", "llama-3.3-70b-versatile"):
             try:
                 r = httpx.post(
                     "https://api.groq.com/openai/v1/chat/completions",
