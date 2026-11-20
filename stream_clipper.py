@@ -582,6 +582,7 @@ CLIP_SCOUT_SCHEMA = {
                     "score": {"type": "INTEGER"},
                     "is_boring_or_menu": {"type": "BOOLEAN"},
                     "hook": {"type": "STRING"},
+                    "intro_narration": {"type": "STRING"},
                     "visual_style": {"type": "STRING"},
                     "highlight_words": {"type": "ARRAY", "items": {"type": "STRING"}},
                     "reason": {"type": "STRING"},
@@ -803,6 +804,7 @@ def pick_viral_gta6_moments(
             f"- Only give score>=75 for a real emotional peak, insane clutch, hilarious fail, shock reveal, or chat explosion.\n"
             f"- hook: 3 to 5 punchy ALL-CAPS words SPECIFIC to what actually happens (e.g. 'HE DESTROYED THE ENTIRE SQUAD', '6-STAR COP CHASE FAIL'). NEVER write 'WAIT FOR THIS REACTION' or 'WAIT FOR IT'.\n"
             f"- visual_style: pick ONE matching the vibe -> 'vice_hype', 'cyber_gold', 'rage_neon', or 'clean_pro'.\n"
+            f"- intro_narration: 6 to 10 punchy spoken words for a 2-second narrator intro setting up the stakes.\n"
             f"- highlight_words: 4 to 6 exact punch words spoken inside [start..end].\n\n"
             f'Return JSON object: {{"clips": [...]}}\n\n'
             f"Transcript:\n" + "\n".join(lines[:450])
@@ -1059,6 +1061,43 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
     return head + "\n".join(events) + "\n"
 
 
+def generate_hook_pop_sfx(out_wav: Path, sr: int = 48000) -> Path:
+    dur = 0.28
+    t = np.linspace(0.0, dur, int(sr * dur), endpoint=False, dtype=np.float32)
+    freq = 160.0 + 480.0 * (1.0 - np.exp(-14.0 * t))
+    phase = 2.0 * np.pi * np.cumsum(freq) / sr
+    tone = np.sin(phase) * np.exp(-16.0 * t)
+    sub = np.sin(2.0 * np.pi * 85.0 * t) * np.exp(-10.0 * t)
+    sig = np.clip((0.55 * tone + 0.45 * sub) * 0.42, -0.95, 0.95)
+    pcm = (sig * 32767.0).astype(np.int16)
+    with wave.open(str(out_wav), "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(sr)
+        wf.writeframes(pcm.tobytes())
+    return out_wav
+
+
+def generate_hook_voiceover(text: str, out_mp3: Path) -> Tuple[Optional[Path], float]:
+    clean = re.sub(r"[^A-Za-z0-9\s',.!?-]", "", (text or "")).strip()[:110]
+    if not clean or env("ENABLE_INTRO_VO", "1") == "0":
+        return None, 0.0
+    try:
+        p = subprocess.run(
+            ["edge-tts", "--voice", env("TTS_VOICE", "en-US-ChristopherNeural"), "--rate=+14%", "--text", clean, "--write-media", str(out_mp3)],
+            capture_output=True, text=True, timeout=25,
+        )
+        if p.returncode == 0 and out_mp3.is_file() and out_mp3.stat().st_size > 1000:
+            out_probe = run_cmd(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", str(out_mp3)])
+            dur_vo = float(out_probe.strip() or 0.0)
+            if 0.4 <= dur_vo <= 4.5:
+                print(f"[TRANSFORMATIVE VO] Generated {dur_vo:.1f}s neural intro: '{clean}'")
+                return out_mp3, dur_vo
+    except Exception as exc:
+        print(f"[INFO] Intro voiceover skipped ({exc}); continuing with SFX + dynamic zoom.")
+    return None, 0.0
+
+
 def render_vertical_short(
     src_mp4: Path,
     out_dir: Path,
@@ -1127,21 +1166,47 @@ def render_vertical_short(
         for extra_ttf in Path("fonts").glob("*.ttf"):
             shutil.copyfile(extra_ttf, work / "f" / extra_ttf.name)
 
-        fc = vf + "[v0]ass=sub.ass:fontsdir=f[v]"
-        af = "highpass=f=110,lowpass=f=7800,loudnorm=I=-14:TP=-1.5:LRA=11" if isolate_voice_band else "loudnorm=I=-14:TP=-1.5:LRA=11"
+        clip_dur = max(1.0, end - start)
+        z_start = round(max(1.5, clip_dur * 0.45), 2)
+        z_end = round(min(clip_dur - 0.4, z_start + 2.2), 2)
+        zoom_vf = (
+            f"[v0]scale=w='if(between(t,{z_start},{z_end}),1156,{OUT_W})':h='if(between(t,{z_start},{z_end}),2054,{OUT_H})':eval=frame,"
+            f"crop={OUT_W}:{OUT_H}:(iw-{OUT_W})/2:(ih-{OUT_H})/2,setsar=1[vz];"
+            f"[vz]ass=sub.ass:fontsdir=f[v]"
+        )
 
+        sfx_wav = generate_hook_pop_sfx(work / "hook_pop.wav")
+        narration_txt = (clip.get("intro_narration") or "").strip()
+        vo_path, vo_dur = generate_hook_voiceover(narration_txt, work / "intro_vo.mp3") if narration_txt else (None, 0.0)
+
+        base_af = "highpass=f=110,lowpass=f=7800" if isolate_voice_band else "anull"
+        ff_inputs = ["-ss", f"{start:.2f}", "-t", f"{clip_dur:.2f}", "-i", str(src_mp4.resolve()), "-i", str(sfx_wav)]
+        if vo_path and vo_dur > 0.4:
+            ff_inputs += ["-i", str(vo_path)]
+            duck_until = round(vo_dur + 0.15, 2)
+            audio_fc = (
+                f";[0:a:0]{base_af},aformat=sample_rates=48000:channel_layouts=stereo,"
+                f"volume='if(lt(t,{duck_until}),0.28,1.0)':eval=frame[main_a];"
+                f"[1:a:0]aformat=sample_rates=48000:channel_layouts=stereo,volume=0.45[sfx_a];"
+                f"[2:a:0]aformat=sample_rates=48000:channel_layouts=stereo,volume=1.35[vo_a];"
+                f"[main_a][sfx_a][vo_a]amix=inputs=3:duration=first:normalize=0,loudnorm=I=-14:TP=-1.5:LRA=11[aout]"
+            )
+        else:
+            audio_fc = (
+                f";[0:a:0]{base_af},aformat=sample_rates=48000:channel_layouts=stereo[main_a];"
+                f"[1:a:0]aformat=sample_rates=48000:channel_layouts=stereo,volume=0.42[sfx_a];"
+                f"[main_a][sfx_a]amix=inputs=2:duration=first:normalize=0,loudnorm=I=-14:TP=-1.5:LRA=11[aout]"
+            )
+
+        fc = vf + zoom_vf + audio_fc
         run_cmd(
             [
                 "ffmpeg", "-y", "-v", "error",
-                "-ss", f"{start:.2f}",
-                "-t", f"{max(1.0, end - start):.2f}",
-                "-i", str(src_mp4.resolve()),
+                *ff_inputs,
                 "-filter_complex", fc,
-                "-map", "[v]",
-                "-map", "0:a:0",
-                "-af", af,
+                "-map", "[v]", "-map", "[aout]",
                 "-c:v", "libx264", "-crf", "21", "-preset", "veryfast", "-pix_fmt", "yuv420p",
-                "-c:a", "aac", "-b:a", "160k", "-ar", "48000", "-ac", "2", "-b:a", "160k", "-ar", "48000",
+                "-c:a", "aac", "-b:a", "160k", "-ar", "48000", "-ac", "2",
                 "-movflags", "+faststart",
                 "out.mp4",
             ],

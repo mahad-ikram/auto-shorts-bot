@@ -4,3 +4,4 @@ pillow==11.3.0
 sherpa-onnx==2.0.1
 yt-dlp==2026.10.21
 opencv-python-headless
+edge-tts
