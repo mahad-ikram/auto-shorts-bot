@@ -599,7 +599,7 @@ _BANNED_GENERIC_HOOKS = {
 }
 
 
-def snap_clip_to_sentences(words: List[Dict], start: float, end: float, min_s: float = 18.0, max_s: float = 58.0) -> Tuple[float, float]:
+def snap_clip_to_sentences(words: List[Dict], start: float, end: float, min_s: float = 15.0, max_s: float = 34.0) -> Tuple[float, float]:
     if not words:
         return start, end
     sents: List[Tuple[float, float]] = []
@@ -720,7 +720,7 @@ def verify_clip_with_gemini_vision(video_path: Path, clip: Dict, uploader: str, 
         )
         parts.append({"text": prompt_txt})
         r = httpx.post(
-            "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent",
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent",
             params={"key": gem_key},
             json={"contents": [{"parts": parts}], "generationConfig": {"temperature": 0.25, "responseMimeType": "application/json"}},
             timeout=35,
@@ -763,8 +763,8 @@ def pick_viral_gta6_moments(
     title: str,
     uploader: str,
     max_clips: int = 1,
-    min_len: int = 20,
-    max_len: int = 52,
+    min_len: int = 16,
+    max_len: int = 32,
     chat_buckets: Optional[Dict[int, int]] = None,
 ) -> List[Dict]:
     z = loud_zscore(db)
@@ -854,10 +854,13 @@ def pick_viral_gta6_moments(
 # ---------------------------------------------------------------------------
 # 5. TrueType Binary Font Measurer & 9:16 ASS Renderer
 # ---------------------------------------------------------------------------
-def _find_system_ttf() -> Path:
-    candidates = [
-        Path("fonts/Poppins-ExtraBold.ttf"),
-        Path("fonts/Anton-Regular.ttf"),
+def _find_system_ttf(style_name: str = "") -> Path:
+    want_anton = (STYLES.get(style_name, {}).get("font", "").lower() == "anton")
+    candidates = (
+        [Path("fonts/Anton-Regular.ttf"), Path("fonts/Poppins-ExtraBold.ttf")]
+        if want_anton
+        else [Path("fonts/Poppins-ExtraBold.ttf"), Path("fonts/Anton-Regular.ttf")]
+    ) + [
         Path("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"),
         Path("/usr/share/fonts/truetype/noto/NotoSans-Bold.ttf"),
     ]
@@ -1071,7 +1074,7 @@ def render_vertical_short(
     out_dir.mkdir(parents=True, exist_ok=True)
     start, end = snap_clip_to_sentences(words, float(clip["start"]), float(clip["end"]))
     end = trim_trailing_black_screen(src_mp4, start, end)
-    ttf_path = _find_system_ttf()
+    ttf_path = _find_system_ttf(style_name)
 
     if layout == "split" and src_w > src_h:
         cam_box = detect_webcam_corner(src_mp4, start, max(4.0, end - start))

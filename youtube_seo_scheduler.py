@@ -117,7 +117,7 @@ refresh_youtube_access_token = refresh_google_access_token
 # 2b. Multi-Model Free-Tier Cascade & Daily Viral Trend Researcher
 #     (gemini-2.5-flash [250 RPD] -> gemini-2.5-flash-lite [1,000 RPD] -> Groq [1,000 RPD])
 # ---------------------------------------------------------------------------
-FREE_GEMINI_MODELS = ["gemini-3.8-flash", "gemini-3.6-flash", "gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-2.5-flash-lite"]
+FREE_GEMINI_MODELS = ["gemini-3.6-flash", "gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-3.8-flash", "gemini-2.5-flash-lite"]
 
 
 def _resolve_ai_keys(explicit_ai_key: Optional[str] = None) -> Tuple[str, str]:
