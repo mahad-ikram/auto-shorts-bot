@@ -159,6 +159,7 @@ def call_gemini_json_with_cascade(prompt: str, schema: Dict, ai_key: Optional[st
                     text = r.json()["candidates"][0]["content"]["parts"][0]["text"]
                     return extract_json_payload(text)
                 except Exception as exc:
+                    print(f"[AI DEBUG] Gemini {model_name} failed: {exc}")
                     last_err = exc
                     break
 
@@ -182,6 +183,7 @@ def call_gemini_json_with_cascade(prompt: str, schema: Dict, ai_key: Optional[st
                 r.raise_for_status()
                 return extract_json_payload(r.json()["choices"][0]["message"]["content"])
             except Exception as exc:
+                print(f"[AI DEBUG] Groq {groq_model} failed: {exc}")
                 last_err = exc
 
     raise RuntimeError(f"All free AI models exhausted or unavailable: {last_err}")
@@ -1073,7 +1075,7 @@ def generate_gta6_seo_metadata(
     active_topic = topic_hint if topic_hint.lower() != "auto" else (stream_title[:28].strip() or "GTA 6")
     hashtag_topic = re.sub(r"[^a-zA-Z0-9]", "", active_topic)[:18] or "LiveClips"
     clean_hook = (hook or f"INSANE {active_topic.upper()} MOMENT").upper()[:22]
-    title = f"{streamer} Reacts to {clean_hook.title()} ({active_topic}) #{hashtag_topic} #Shorts"[:95]
+    title = f"{streamer}: {clean_hook.title()} #GTA6 #Shorts"[:95]
     description = (
         f"{streamer} experiences an unforgettable live moment during {stream_title} ({active_topic}). "
         f"Watch the full reaction and highlight captured live.\n\n"

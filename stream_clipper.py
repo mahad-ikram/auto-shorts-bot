@@ -899,6 +899,48 @@ def _ass_ts(t: float) -> str:
     return f"{h}:{m:02d}:{t % 60:05.2f}"
 
 
+_PROFANITY_MAP = {
+    "fuck": "f**k", "fucking": "f**king", "fucked": "f**ked", "motherfucker": "m****rf**ker",
+    "bitch": "b**ch", "bitches": "b**ches", "shit": "s**t", "bullshit": "bulls**t",
+    "asshole": "a**hole", "nigga": "n***a", "nigger": "n****r", "cunt": "c**t",
+}
+
+
+def censor_caption_word(word: str) -> str:
+    m = re.match(r"^([^A-Za-z]*)([A-Za-z]+)([^A-Za-z]*)$", word or "")
+    if not m:
+        return word
+    pre, core, post = m.groups()
+    rep = _PROFANITY_MAP.get(core.lower())
+    if not rep:
+        return word
+    return pre + (rep.upper() if core.isupper() else rep) + post
+
+
+def trim_trailing_black_screen(video_path: Path, start: float, end: float) -> float:
+    dur = end - start
+    if dur <= 12.0:
+        return end
+    try:
+        p = subprocess.run(
+            [
+                "ffmpeg", "-v", "info", "-ss", f"{start:.2f}", "-t", f"{dur:.2f}",
+                "-i", str(video_path), "-vf", "blackdetect=d=1.5:pix_th=0.10",
+                "-an", "-f", "null", "-",
+            ],
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=45,
+        )
+        for m in re.finditer(r"black_start:([0-9.]+)", p.stderr or ""):
+            b_start = float(m.group(1))
+            if b_start >= 10.0:
+                new_end = round(start + b_start + 0.3, 2)
+                print(f"[BLACK-SCREEN TRIM] Cut dead loading screen at +{b_start:.1f}s (new duration: {new_end - start:.1f}s)")
+                return new_end
+    except Exception:
+        pass
+    return end
+
+
 def build_ass_subtitles(
     words: List[Dict],
     start: float,
@@ -978,7 +1020,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         g_end = min(g[-1]["e"] + 0.25, groups[gi + 1][0]["s"] if gi + 1 < len(groups) else end) - start
         if g_end - g_start < 0.02:
             continue
-        texts = [re.sub(r"[.,;:]+$", "", x["w"]).upper() if st["upper"] else re.sub(r"[.,;:]+$", "", x["w"]) for x in g]
+        texts = [censor_caption_word(re.sub(r"[.,;:]+$", "", x["w"])).upper() if st["upper"] else censor_caption_word(re.sub(r"[.,;:]+$", "", x["w"])) for x in g]
         size = st["size"]
         gap = fm.width("n n", size) - 2 * fm.width("n", size) + (2 * st["outline"] + 6)
         total_w = sum(fm.width(t, size) for t in texts) + gap * (len(texts) - 1)
@@ -1028,6 +1070,7 @@ def render_vertical_short(
 ) -> Dict:
     out_dir.mkdir(parents=True, exist_ok=True)
     start, end = snap_clip_to_sentences(words, float(clip["start"]), float(clip["end"]))
+    end = trim_trailing_black_screen(src_mp4, start, end)
     ttf_path = _find_system_ttf()
 
     if layout == "split" and src_w > src_h:
