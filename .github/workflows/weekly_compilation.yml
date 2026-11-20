@@ -1,0 +1,56 @@
+name: Sunday Weekly 16-9 Gaming Highlight Compilation
+
+on:
+  schedule:
+    - cron: "23 11 * * 0"
+
+  workflow_dispatch:
+    inputs:
+      days:
+        description: "Number of past days of Drive clips to compile"
+        required: false
+        default: "7"
+      max_clips:
+        description: "Maximum clips to stitch into the compilation"
+        required: false
+        default: "15"
+
+jobs:
+  compile-weekly-highlights:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    env:
+      AI_API_KEY: ${{ secrets.AI_API_KEY }}
+      GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+      GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
+      GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+      YT_REFRESH_TOKEN: ${{ secrets.YT_REFRESH_TOKEN }}
+      GDRIVE_OUTPUT_FOLDER_ID: ${{ secrets.GDRIVE_OUTPUT_FOLDER_ID }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install FFmpeg & fonts
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ffmpeg fonts-dejavu-core fonts-noto-core
+
+      - name: Install Python dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Compile Weekly 16:9 Highlight Video & Schedule on YouTube
+        run: |
+          python3 weekly_compiler.py \
+            --days "${{ github.event.inputs.days || '7' }}" \
+            --max-clips "${{ github.event.inputs.max_clips || '15' }}" \
+            --schedule
