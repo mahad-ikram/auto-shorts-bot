@@ -1291,6 +1291,38 @@ def run_self_test() -> None:
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def flush_due_instagram_queue(cloud_state: Dict, work_dir: Path) -> None:
+    if not (env("IG_USER_ID") and (env("IG_ACCESS_TOKEN") or env("FB_PAGE_ACCESS_TOKEN"))):
+        return
+    queue = list(cloud_state.get("pending_ig_queue") or [])
+    if not queue:
+        return
+    now_utc = dt.datetime.now(dt.timezone.utc)
+    today_utc = now_utc.strftime("%Y-%m-%d")
+    daily_counts = cloud_state.setdefault("daily_uploads", {}).setdefault(today_utc, {"yt": 0, "fb": 0, "ig": 0})
+    max_daily_ig = int(env("MAX_DAILY_IG", "2") or "2")
+
+    remaining = []
+    for item in queue:
+        try:
+            due_dt = dt.datetime.fromisoformat(str(item.get("publish_at", "")).replace("Z", "+00:00"))
+        except ValueError:
+            due_dt = now_utc
+        if due_dt <= now_utc and daily_counts.get("ig", 0) < max_daily_ig:
+            tmp_mp4 = work_dir / f"ig_due_{item.get('stem', 'reel')}.mp4"
+            try:
+                drive_download_file(item["drive_file_id"], tmp_mp4)
+                _, ig_url = upload_instagram_reel(video_path=tmp_mp4, caption=item.get("caption", ""))
+                daily_counts["ig"] = daily_counts.get("ig", 0) + 1
+                print(f"[IG GOLDEN-HOUR QUEUE] Published due Reel ({daily_counts['ig']}/{max_daily_ig} today): {ig_url}")
+                tmp_mp4.unlink(missing_ok=True)
+                continue
+            except Exception as exc:
+                print(f"[WARN] Queued Instagram Reel publish failed ({exc}); keeping in queue for retry.")
+        remaining.append(item)
+    cloud_state["pending_ig_queue"] = remaining[-20:]
+
+
 if __name__ == "__main__":
     ap = argparse.ArgumentParser(description="Step 2 (Upgraded): Stream/Drive Clipper, 9:16 ASS Renderer & Drive Output Sync")
     ap.add_argument("--url", type=str, default="", help="Twitch, Kick, or YouTube Live/VOD URL to clip")
@@ -1317,6 +1349,8 @@ if __name__ == "__main__":
 
     # 0. Load persistent 24/7 cloud state ledger & update YouTube Analytics Heatmap
     cloud_state = load_cloud_state()
+    if args.schedule:
+        flush_due_instagram_queue(cloud_state, work)
     daily_plan = research_daily_viral_trends(cloud_state, topic_hint=args.topic or env('TOPIC_NICHE', 'auto'))
     if args.schedule or args.auto_24x7:
         try:
@@ -1440,6 +1474,7 @@ if __name__ == "__main__":
         print(f"[{stem}] Rendered: {out['mp4'].name} | Title: {seo['title']} | Slot: {slot_iso}")
 
         # 3. Save finished Short, Thumbnail & SEO JSON back to Google Drive Output folder
+        vid_drive_id = ""
         if should_save_drive and env("GDRIVE_OUTPUT_FOLDER_ID"):
             vid_drive_id, vid_drive_url = drive_upload_file(
                 local_path=out["mp4"],
@@ -1490,17 +1525,23 @@ if __name__ == "__main__":
                 except Exception as exc:
                     print(f"[WARN] Facebook Reels upload skipped/failed: {exc}")
 
-            # 4c. Auto-publish on Instagram Reels (if IG_USER_ID is set)
-            if env("IG_USER_ID") and (env("IG_ACCESS_TOKEN") or env("FB_PAGE_ACCESS_TOKEN")) and daily_counts.get("ig", 0) < max_daily_ig:
-                try:
-                    ig_id, ig_url = upload_instagram_reel(
-                        video_path=out["mp4"],
-                        caption=social_cap,
-                    )
-                    daily_counts["ig"] = daily_counts.get("ig", 0) + 1
-                    print(f"[{stem}] Published on Instagram Reels ({daily_counts['ig']}/{max_daily_ig} today): {ig_url}")
-                except Exception as exc:
-                    print(f"[WARN] Instagram Reels upload skipped/failed: {exc}")
+            # 4c. Queue Instagram Reel for its Golden Hour (or publish now if Drive ID unavailable)
+            if env("IG_USER_ID") and (env("IG_ACCESS_TOKEN") or env("FB_PAGE_ACCESS_TOKEN")):
+                if vid_drive_id:
+                    cloud_state.setdefault("pending_ig_queue", []).append({
+                        "drive_file_id": vid_drive_id,
+                        "caption": social_cap,
+                        "publish_at": slot_iso,
+                        "stem": stem,
+                    })
+                    print(f"[{stem}] Queued Instagram Reel for Golden Hour: {slot_iso} (Drive ID: {vid_drive_id})")
+                elif daily_counts.get("ig", 0) < max_daily_ig:
+                    try:
+                        ig_id, ig_url = upload_instagram_reel(video_path=out["mp4"], caption=social_cap)
+                        daily_counts["ig"] = daily_counts.get("ig", 0) + 1
+                        print(f"[{stem}] Published on Instagram Reels ({daily_counts['ig']}/{max_daily_ig} today): {ig_url}")
+                    except Exception as exc:
+                        print(f"[WARN] Instagram Reels upload skipped/failed: {exc}")
 
     # 5. If source came from Google Drive Inbox, mark it `[CLIPPED]` so it isn't repeated
     if ingested.get("drive_file_id"):
