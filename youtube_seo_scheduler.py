@@ -847,6 +847,32 @@ def update_analytics_heatmap(
         st["golden_hours_utc"] = list(DEFAULT_GOLDEN_HOURS_UTC)
         print(f"[ANALYTICS HEATMAP] Cold-start mode ({published_count}/5 Shorts published) -> Using default Golden Hours: {DEFAULT_GOLDEN_HOURS_UTC}")
 
+    pub_meta = st.get("published_meta") or {}
+    if retention_by_vid and pub_meta:
+        scored_shorts = []
+        style_ret: Dict[str, List[float]] = {}
+        for vid_id, ret_pct in retention_by_vid.items():
+            meta = pub_meta.get(vid_id)
+            if not meta:
+                continue
+            scored_shorts.append((ret_pct, meta))
+            st_name = meta.get("style") or "vice_hype"
+            style_ret.setdefault(st_name, []).append(ret_pct)
+        if scored_shorts:
+            scored_shorts.sort(key=lambda x: x[0], reverse=True)
+            best_style = max(style_ret.items(), key=lambda kv: sum(kv[1]) / len(kv[1]))[0] if style_ret else "vice_hype"
+            top_half = scored_shorts[: max(1, len(scored_shorts) // 2)]
+            avg_win_dur = round(sum(float(m.get("duration") or 24.0) for _, m in top_half) / len(top_half), 1)
+            playbook = {
+                "best_style": best_style,
+                "ideal_duration_sec": max(16, min(32, int(round(avg_win_dur)))),
+                "winning_hooks": [f"{m.get('hook')} ({r:.0f}% ret)" for r, m in scored_shorts[:4] if m.get("hook")],
+                "avoid_hooks": [f"{m.get('hook')} ({r:.0f}% ret)" for r, m in scored_shorts[-3:] if r < 60.0 and m.get("hook")],
+                "avg_retention_pct": round(sum(r for r, _ in scored_shorts) / len(scored_shorts), 1),
+            }
+            st["retention_playbook"] = playbook
+            print(f"[RETENTION LOOP] Analyzed {len(scored_shorts)} tracked Shorts (avg {playbook['avg_retention_pct']}%) -> Best style: {best_style} | Ideal len: {playbook['ideal_duration_sec']}s")
+
     return st
 
 

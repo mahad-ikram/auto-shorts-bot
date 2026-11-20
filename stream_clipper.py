@@ -767,6 +767,7 @@ def pick_viral_gta6_moments(
     min_len: int = 16,
     max_len: int = 32,
     chat_buckets: Optional[Dict[int, int]] = None,
+    retention_playbook: Optional[Dict] = None,
 ) -> List[Dict]:
     z = loud_zscore(db)
     total_dur_est = float(len(db)) if len(db) else (words[-1]["e"] if words else 60.0)
@@ -807,7 +808,7 @@ def pick_viral_gta6_moments(
             f"- intro_narration: 6 to 10 punchy spoken words for a 2-second narrator intro setting up the stakes.\n"
             f"- highlight_words: 4 to 6 exact punch words spoken inside [start..end].\n\n"
             f'Return JSON object: {{"clips": [...]}}\n\n'
-            f"Transcript:\n" + "\n".join(lines[:450])
+            + (f"CHANNEL RETENTION PLAYBOOK (Learn from past winners!): Best visual_style={retention_playbook.get('best_style')}, ideal clip length ~{retention_playbook.get('ideal_duration_sec')}s, winning hooks={retention_playbook.get('winning_hooks')}, low-retention hooks to avoid={retention_playbook.get('avoid_hooks')}\n\n" if retention_playbook else "") + f"Transcript:\n" + "\n".join(lines[:450])
         )
         try:
             res = call_gemini_json_with_cascade(prompt, CLIP_SCOUT_SCHEMA)
@@ -1371,7 +1372,7 @@ if __name__ == "__main__":
     # 2. Extract audio, transcribe, and pick top viral moments
     pcm, db = extract_16k_wav(ingested["video_path"], work / "audio.wav")
     words = ingested["native_words"] or transcribe_audio(work / "audio.wav", pcm)
-    picks = pick_viral_gta6_moments(words, db, ingested["title"], ingested["uploader"], max_clips=args.max_clips, chat_buckets=ingested.get("chat_buckets"))
+    picks = pick_viral_gta6_moments(words, db, ingested["title"], ingested["uploader"], max_clips=args.max_clips, chat_buckets=ingested.get("chat_buckets"), retention_playbook=cloud_state.get("retention_playbook"))
 
     should_save_drive = args.save_to_drive or bool(env("GDRIVE_OUTPUT_FOLDER_ID"))
     scheduled_slots: List[str] = list(cloud_state.get("scheduled_iso_slots") or [])
@@ -1468,6 +1469,7 @@ if __name__ == "__main__":
                 publish_at_iso=slot_iso,
             )
             daily_counts["yt"] = daily_counts.get("yt", 0) + 1
+            cloud_state.setdefault("published_meta", {})[vid_id] = {"streamer": ingested["uploader"], "style": chosen_style, "duration": round(float(clip.get("end", 25)) - float(clip.get("start", 0)), 1), "hook": clip.get("hook", "")}
             print(f"[{stem}] Scheduled on YouTube Studio ({daily_counts['yt']}/{max_daily_yt} today): {url_short} (publishAt={slot_iso})")
             if seo.get("pinned_comment"):
                 post_engagement_comment(vid_id, seo["pinned_comment"])
