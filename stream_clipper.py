@@ -1059,6 +1059,38 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                     f"Dialogue: 1,{_ass_ts(b)},{_ass_ts(g_end)},Cap,,0,0,0,,{{{pos}\\c&H{base_col}&"
                     f"\\fscx{pop - 5}\\fscy{pop - 5}\\t(0,90,\\fscx100\\fscy100)}}{t}"
                 )
+
+    # Animated 10px Vice-Neon (#FF2A85) top retention progress bar
+    dur_ms = max(500, int(dur * 1000))
+    span_full = f"{_ass_ts(0)},{_ass_ts(dur)}"
+    bar_draw = f"m 0 0 l {OUT_W} 0 l {OUT_W} 10 l 0 10"
+    events.append(
+        f"Dialogue: 5,{span_full},Hook,,0,0,0,,{{\an7\pos(0,0)\c&H852AFF&\bord0\shad0\clip(0,0,1,10)\t(0,{dur_ms},\clip(0,0,{OUT_W},10))\p1}}{bar_draw}{{\p0}}"
+    )
+
+    # Final-3s animated FOLLOW @RAZONGAMERZ CTA pill (safe above bottom UI)
+    if dur >= 4.0:
+        cta_start = max(0.5, dur - 3.0)
+        cta_span = f"{_ass_ts(cta_start)},{_ass_ts(dur)}"
+        cta_txt = "FOLLOW @RAZONGAMERZ"
+        cta_sz = 46
+        cw_cta = fm.width(cta_txt, cta_sz)
+        bw_c, bh_c = cw_cta + 64, fm.em(cta_sz) * 1.15 + 28
+        cta_y = 1440
+        cx0, cy0 = (OUT_W - bw_c) / 2, cta_y - bh_c / 2
+        cx1, cy1 = cx0 + bw_c, cy0 + bh_c
+        rc = min(18, bh_c / 2)
+        nc = lambda v: f"{v:.0f}"
+        cta_box = (
+            f"m {nc(cx0 + rc)} {nc(cy0)} l {nc(cx1 - rc)} {nc(cy0)} "
+            f"b {nc(cx1)} {nc(cy0)} {nc(cx1)} {nc(cy0)} {nc(cx1)} {nc(cy0 + rc)} "
+            f"l {nc(cx1)} {nc(cy1 - rc)} b {nc(cx1)} {nc(cy1)} {nc(cx1)} {nc(cy1)} {nc(cx1 - rc)} {nc(cy1)} "
+            f"l {nc(cx0 + rc)} {nc(cy1)} b {nc(cx0)} {nc(cy1)} {nc(cx0)} {nc(cy1)} {nc(cx0)} {nc(cy1 - rc)} "
+            f"l {nc(cx0)} {nc(cy0 + rc)} b {nc(cx0)} {nc(cy0)} {nc(cx0)} {nc(cy0)} {nc(cx0 + rc)} {nc(cy0)}"
+        )
+        events.append(f"Dialogue: 5,{cta_span},Hook,,0,0,0,,{{\an7\pos(0,0)\fad(200,120)\c&H100A09&\3c&H03B7FF&\bord4\p1}}{cta_box}{{\p0}}")
+        events.append(f"Dialogue: 6,{cta_span},Hook,,0,0,0,,{{\an5\pos({OUT_W // 2},{cta_y - fm.cap_shift(cta_sz):.0f})\fad(200,120)\fs{cta_sz}\c&H03B7FF&\bord2}}{cta_txt}")
+
     return head + "\n".join(events) + "\n"
 
 
@@ -1114,6 +1146,7 @@ def render_vertical_short(
     out_dir.mkdir(parents=True, exist_ok=True)
     start, end = snap_clip_to_sentences(words, float(clip["start"]), float(clip["end"]))
     end = trim_trailing_black_screen(src_mp4, start, end)
+    start, end = trim_dead_air_and_fillers(words, start, end)
     ttf_path = _find_system_ttf(style_name)
 
     if layout == "split" and src_w > src_h:
@@ -1506,8 +1539,11 @@ if __name__ == "__main__":
             daily_counts["yt"] = daily_counts.get("yt", 0) + 1
             cloud_state.setdefault("published_meta", {})[vid_id] = {"streamer": ingested["uploader"], "style": chosen_style, "duration": round(float(clip.get("end", 25)) - float(clip.get("start", 0)), 1), "hook": clip.get("hook", "")}
             print(f"[{stem}] Scheduled on YouTube Studio ({daily_counts['yt']}/{max_daily_yt} today): {url_short} (publishAt={slot_iso})")
-            if seo.get("pinned_comment"):
-                post_engagement_comment(vid_id, seo["pinned_comment"])
+            comment_txt = (seo.get("pinned_comment") or "Rate this moment 1-10 below!").strip()
+            latest_comp = (cloud_state.get("latest_compilation") or {}).get("url")
+            if latest_comp:
+                comment_txt += f"\n\n🔥 Watch this week's full highlights compilation: {latest_comp}"
+            post_engagement_comment(vid_id, comment_txt)
             send_telegram_summary_card(seo["title"], ingested["uploader"], slot_iso, yt_url=url_short)
 
             # 4b. Auto-schedule on Facebook Page Reels (if FB_PAGE_ID & FB_PAGE_ACCESS_TOKEN are set)

@@ -24,6 +24,8 @@ from youtube_seo_scheduler import (
     drive_upload_file,
     env,
     extract_drive_folder_id,
+    load_cloud_state,
+    save_cloud_state,
     refresh_google_access_token,
     upload_and_schedule_short,
 )
@@ -291,7 +293,14 @@ if __name__ == "__main__":
                 tags=["GTA 6", "Gaming Highlights", "Weekly Gaming Clips", "Twitch Highlights", "RazonGamerz"],
                 publish_at_iso=slot_iso,
             )
-            print(f"[WEEKLY COMPILER] Scheduled Long-Form Compilation on YouTube Studio: {vid_url} (publishAt={slot_iso})")
+            watch_url = f"https://www.youtube.com/watch?v={vid_id}"
+            print(f"[WEEKLY COMPILER] Scheduled Long-Form Compilation on YouTube Studio: {watch_url} (publishAt={slot_iso})")
+            try:
+                st = load_cloud_state()
+                st["latest_compilation"] = {"video_id": vid_id, "url": watch_url, "title": yt_title}
+                save_cloud_state(st)
+            except Exception:
+                pass
             try:
                 drive_upload_file(final_mp4, mime_type="video/mp4", description=yt_title)
             except Exception:
