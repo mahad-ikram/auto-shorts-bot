@@ -87,9 +87,20 @@ def render_numbered_bumper(index_num: int, clip_title: str, out_mp4: Path, work:
     draw.rounded_rectangle([bx0, by0, bx1, by1], radius=28, fill=(255, 42, 133, 250), outline=(255, 183, 3, 255), width=6)
     draw.text(((W_OUT - nw) // 2, by0 + 24 - nb[1]), num_txt, font=badge_font, fill=(255, 255, 255, 255))
 
-    clean_t = re.sub(r"#\w+", "", clip_title or f"Highlight #{index_num}").strip()[:54].upper()
-    tb = draw.textbbox((0, 0), clean_t, font=title_font)
-    draw.text(((W_OUT - (tb[2] - tb[0])) // 2, by1 + 70), clean_t, font=title_font, fill=(248, 249, 250, 255))
+    import textwrap
+    clean_t = re.sub(r"#\w+", "", clip_title or f"Highlight #{index_num}").strip()[:64].upper()
+    lines = textwrap.wrap(clean_t, width=28)[:2] or [clean_t]
+    fsize = 64
+    while fsize >= 38:
+        title_font = _load_bold_font(fsize)
+        if all((draw.textbbox((0, 0), ln, font=title_font)[2] - draw.textbbox((0, 0), ln, font=title_font)[0]) <= (W_OUT - 220) for ln in lines):
+            break
+        fsize -= 4
+    y_cursor = by1 + 65
+    for ln in lines:
+        tb = draw.textbbox((0, 0), ln, font=title_font)
+        draw.text(((W_OUT - (tb[2] - tb[0])) // 2, y_cursor), ln, font=title_font, fill=(248, 249, 250, 255))
+        y_cursor += (tb[3] - tb[1]) + 26
 
     brand_txt = "RAZONGAMERZ  •  WEEKLY TOP CLIPS"
     bb = draw.textbbox((0, 0), brand_txt, font=sub_font)
