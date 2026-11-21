@@ -717,7 +717,8 @@ def verify_clip_with_gemini_vision(video_path: Path, clip: Dict, uploader: str, 
             f"Look at these 3 frames from the clip. Answer in strict JSON:\n"
             f"- visual_ok (boolean): false ONLY if all frames are a static menu, countdown timer, loading screen, or BRB screen with zero gameplay/action.\n"
             f"- improved_hook (string): 3 to 5 punchy ALL-CAPS words matching what viewers ACTUALLY SEE in these frames (never generic 'WAIT FOR IT' or 'LOST IT').\n"
-            f"- visual_reason (string): 1 short sentence describing what is visible."
+            f"- visual_reason (string): 1 short sentence describing what is visible.\n"
+            f"- webcam_box (array of 4 integers [ymin, xmin, ymax, xmax] on a 0-1000 scale, or null): the EXACT bounding box of the streamer's facecam/webcam overlay anywhere on the screen, or null if no webcam is visible."
         )
         parts.append({"text": prompt_txt})
         r = httpx.post(
@@ -733,11 +734,20 @@ def verify_clip_with_gemini_vision(video_path: Path, clip: Dict, uploader: str, 
                     clip["is_boring_or_menu"] = True
                     clip["score"] = min(int(clip.get("score") or 50), 40)
                     print(f"[GEMINI VISION] Rejected static/menu clip: {data.get('visual_reason')}")
-                elif data.get("improved_hook"):
+                if data.get("improved_hook") and data.get("visual_ok") is not False:
                     new_h = re.sub(r"\s+", " ", str(data["improved_hook"])).strip().upper()[:34]
                     if new_h and new_h.lower() not in _BANNED_GENERIC_HOOKS:
                         clip["hook"] = new_h
                         print(f"[GEMINI VISION] Verified visuals ({data.get('visual_reason')}) -> Hook: {new_h}")
+                wb = data.get("webcam_box")
+                if isinstance(wb, list) and len(wb) == 4:
+                    try:
+                        y0, x0, y1, x1 = [max(0, min(1000, int(v))) for v in wb]
+                        if (x1 - x0) >= 80 and (y1 - y0) >= 80 and (x1 - x0) <= 550 and (y1 - y0) <= 550:
+                            clip["webcam_box_norm"] = [y0, x0, y1, x1]
+                            print(f"[GEMINI VISION WEBCAM] Detected exact webcam box (0-1000): {[y0, x0, y1, x1]}")
+                    except Exception:
+                        pass
         else:
             print(f"[WARN] Gemini Vision HTTP {r.status_code}: {r.text[:180]}")
     except Exception as exc:
@@ -1150,18 +1160,28 @@ def render_vertical_short(
     ttf_path = _find_system_ttf(style_name)
 
     if layout == "split" and src_w > src_h:
-        cam_box = detect_webcam_corner(src_mp4, start, max(4.0, end - start))
+        cam_box = None
+        wb_norm = clip.get("webcam_box_norm")
+        if isinstance(wb_norm, list) and len(wb_norm) == 4:
+            ny0, nx0, ny1, nx1 = wb_norm
+            cx = max(0, int(nx0 * src_w / 1000) // 2 * 2)
+            cy = max(0, int(ny0 * src_h / 1000) // 2 * 2)
+            cw = max(120, min(src_w - cx, int((nx1 - nx0) * src_w / 1000) // 2 * 2))
+            ch = max(100, min(src_h - cy, int((ny1 - ny0) * src_h / 1000) // 2 * 2))
+            cam_box = (cx, cy, cw, ch)
+        if not cam_box:
+            cam_box = detect_webcam_corner(src_mp4, start, max(4.0, end - start))
         if cam_box:
             cx, cy, cw, ch = cam_box
-            top_h, bot_h = 672, 1248
-            hook_y, cap_y = 672, 1290
+            top_h, bot_h = 864, 1056
+            hook_y, cap_y = 185, 864
             vf = (
                 f"[0:v]fps={OUT_FPS},split=2[cam_in][game_in];"
                 f"[cam_in]crop={cw}:{ch}:{cx}:{cy},scale={OUT_W}:{top_h}:force_original_aspect_ratio=increase,crop={OUT_W}:{top_h}[top_cam];"
                 f"[game_in]scale={OUT_W}:{bot_h}:force_original_aspect_ratio=increase,crop={OUT_W}:{bot_h}[bot_game];"
                 f"[top_cam][bot_game]vstack=inputs=2,setsar=1[v0];"
             )
-            print(f"[SPLIT-SCREEN] Detected facecam at ({cx},{cy},{cw}x{ch}) -> Facecam Top + Gameplay Bottom!")
+            print(f"[SPLIT-SCREEN 45/55] Facecam ({cx},{cy},{cw}x{ch}) Top + Gameplay Bottom + Seam Captions!")
         else:
             fg_h, hook_y, cap_y = OUT_H, 310, 1240
             vf = f"[0:v]fps={OUT_FPS},scale={OUT_W}:{OUT_H}:force_original_aspect_ratio=increase,crop={OUT_W}:{OUT_H},setsar=1[v0];"
