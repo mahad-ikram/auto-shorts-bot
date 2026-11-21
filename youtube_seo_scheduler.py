@@ -609,6 +609,26 @@ def discover_live_twitch_stream(state: Optional[Dict] = None, preferred_url: str
                 return hit
     except Exception as exc:
         print(f"[WARN] Twitch top streams lookup error: {exc}")
+
+    for lg in logins_to_check[:15]:
+        dedup_key = f"twitch:{lg}:{now_bucket}"
+        if dedup_key in processed:
+            continue
+        url = f"https://www.twitch.tv/{lg}"
+        try:
+            res = subprocess.run(
+                ["yt-dlp", "--simulate", "--no-warnings", "--quiet", "--print", "%(is_live)s|%(title)s|%(uploader)s", url],
+                capture_output=True, text=True, timeout=12,
+            )
+            if res.returncode == 0 and res.stdout.strip().startswith("True|"):
+                _, title, uploader = (res.stdout.strip().split("|") + ["", ""])[:3]
+                print(f"[TWITCH DIRECT PROBE] Found live stream @{uploader or lg}: {title} ({url})")
+                return {
+                    "url": url, "video_id": lg, "title": title or f"{lg} Live Gaming",
+                    "uploader": uploader or lg, "is_live": True, "dedup_key": dedup_key, "fallback_url": "",
+                }
+        except Exception:
+            continue
     return None
 
 
@@ -1087,7 +1107,7 @@ def generate_gta6_seo_metadata(
         topic_hint=topic_hint,
         streamer=streamer or "Streamer",
         stream_title=stream_title or "Live Stream Highlight",
-        hook=hook or "WAIT FOR IT",
+        hook=hook or "INSANE CLIP",
         transcript=(transcript or "")[:2500],
     )
 
@@ -1699,8 +1719,8 @@ def audit_and_enforce_2026_seo_rules(seo: Dict, streamer: str, topic: str) -> Di
     seo["title"] = title
 
     # Enforce 2-3 word max on thumbnail_badge AND Title-Thumbnail Synergy (no exact overlap)
-    badge_words = re.sub(r"[^A-Z0-9 !?\-]", "", str(seo.get("thumbnail_badge") or "WAIT FOR IT").upper()).split()
-    badge = " ".join(badge_words[:3]) or "WAIT FOR IT"
+    badge_words = re.sub(r"[^A-Z0-9 !?\-]", "", str(seo.get("thumbnail_badge") or "INSANE CLIP").upper()).split()
+    badge = " ".join(badge_words[:3]) or "INSANE CLIP"
     if badge.lower() in title[:35].lower():
         badge = "UNREAL REACTION" if "reaction" not in title.lower() else "PURE CHAOS"
     seo["thumbnail_badge"] = badge[:20]
@@ -2098,7 +2118,7 @@ def lint_title_and_thumb_pairing(title: str, thumb_badge: str) -> Dict:
     if shared:
         issues.append(f"duplicate-words:{','.join(sorted(shared))}")
         # Automatically de-duplicate thumbnail badge so it complements the title
-        alt_badges = ["WAIT FOR IT", "UNREAL PAYOFF", "PURE CHAOS", "INSTANT REGRET", "NO WAY"]
+        alt_badges = ["INSANE CLIP", "UNREAL PAYOFF", "PURE CHAOS", "INSTANT REGRET", "NO WAY"]
         for cand in alt_badges:
             cand_w = set(re.findall(r"[a-z0-9']+", cand.lower())) - _STOP_WORDS
             if not (cand_w & (set(t_words) - _STOP_WORDS)):

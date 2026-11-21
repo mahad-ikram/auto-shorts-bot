@@ -1324,6 +1324,28 @@ def run_self_test() -> None:
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def flush_due_youtube_comments(cloud_state: Dict) -> None:
+    queue = list(cloud_state.get("pending_comments") or [])
+    if not queue:
+        return
+    now_utc = dt.datetime.now(dt.timezone.utc)
+    remaining = []
+    for item in queue:
+        try:
+            due_dt = dt.datetime.fromisoformat(str(item.get("publish_at", "")).replace("Z", "+00:00"))
+        except ValueError:
+            due_dt = now_utc
+        if due_dt <= now_utc:
+            try:
+                post_engagement_comment(item["video_id"], item["comment"])
+                print(f"[POST-PUBLISH COMMENT] Posted top comment on now-public Short {item['video_id']}")
+                continue
+            except Exception as exc:
+                print(f"[WARN] Post-publish comment retry needed for {item.get('video_id')}: {exc}")
+        remaining.append(item)
+    cloud_state["pending_comments"] = remaining[-30:]
+
+
 def flush_due_instagram_queue(cloud_state: Dict, work_dir: Path) -> None:
     if not (env("IG_USER_ID") and (env("IG_ACCESS_TOKEN") or env("FB_PAGE_ACCESS_TOKEN"))):
         return
@@ -1384,6 +1406,7 @@ if __name__ == "__main__":
     cloud_state = load_cloud_state()
     if args.schedule:
         flush_due_instagram_queue(cloud_state, work)
+        flush_due_youtube_comments(cloud_state)
     daily_plan = research_daily_viral_trends(cloud_state, topic_hint=args.topic or env('TOPIC_NICHE', 'auto'))
     if args.schedule or args.auto_24x7:
         try:
@@ -1543,7 +1566,8 @@ if __name__ == "__main__":
             latest_comp = (cloud_state.get("latest_compilation") or {}).get("url")
             if latest_comp:
                 comment_txt += f"\n\n🔥 Watch this week's full highlights compilation: {latest_comp}"
-            post_engagement_comment(vid_id, comment_txt)
+            cloud_state.setdefault("pending_comments", []).append({"video_id": vid_id, "comment": comment_txt, "publish_at": slot_iso})
+            print(f"[{stem}] Queued top engagement comment for post-publish ({slot_iso})")
             send_telegram_summary_card(seo["title"], ingested["uploader"], slot_iso, yt_url=url_short)
 
             # 4b. Auto-schedule on Facebook Page Reels (if FB_PAGE_ID & FB_PAGE_ACCESS_TOKEN are set)
