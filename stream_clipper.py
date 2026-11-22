@@ -718,7 +718,7 @@ def verify_clip_with_gemini_vision(video_path: Path, clip: Dict, uploader: str, 
             f"- visual_ok (boolean): false ONLY if all frames are a static menu, countdown timer, loading screen, or BRB screen with zero gameplay/action.\n"
             f"- improved_hook (string): 3 to 5 punchy ALL-CAPS words matching what viewers ACTUALLY SEE in these frames (never generic 'WAIT FOR IT' or 'LOST IT').\n"
             f"- visual_reason (string): 1 short sentence describing what is visible.\n"
-            f"- webcam_box (array of 4 integers [ymin, xmin, ymax, xmax] on a 0-1000 scale, or null): the EXACT bounding box of the streamer's facecam/webcam overlay anywhere on the screen, or null if no webcam is visible."
+            f"- webcam_box (array of 4 integers [ymin, xmin, ymax, xmax] on a 0-1000 scale, or null): the EXACT tight bounding box of ONLY the streamer's face and shoulders inside their webcam (NEVER include Twitch chat text or overlays below/beside the webcam!), or null if no human facecam is visible."
         )
         parts.append({"text": prompt_txt})
         r = httpx.post(
@@ -743,7 +743,7 @@ def verify_clip_with_gemini_vision(video_path: Path, clip: Dict, uploader: str, 
                 if isinstance(wb, list) and len(wb) == 4:
                     try:
                         y0, x0, y1, x1 = [max(0, min(1000, int(v))) for v in wb]
-                        if (x1 - x0) >= 80 and (y1 - y0) >= 80 and (x1 - x0) <= 550 and (y1 - y0) <= 550:
+                        if (x1 - x0) >= 70 and (y1 - y0) >= 70 and (x1 - x0) <= 450 and (y1 - y0) <= 340:
                             clip["webcam_box_norm"] = [y0, x0, y1, x1]
                             print(f"[GEMINI VISION WEBCAM] Detected exact webcam box (0-1000): {[y0, x0, y1, x1]}")
                     except Exception:
@@ -833,7 +833,13 @@ def pick_viral_gta6_moments(
                 c["hook"] = hook_txt[:34]
                 if c.get("visual_style") not in STYLES:
                     c["visual_style"] = "vice_hype"
-                if (not boring and score >= min_score) or force_clip:
+                c_words = [w for w in words if float(c.get("start", 0)) <= w["s"] <= float(c.get("end", 0))]
+                max_gap = 0.0
+                for wi in range(1, len(c_words)):
+                    max_gap = max(max_gap, c_words[wi]["s"] - c_words[wi - 1]["e"])
+                if max_gap > 8.0 and not force_clip:
+                    print(f"[QUALITY GATE] Rejected clip ({c.get('start')}s-{c.get('end')}s): {max_gap:.1f}s dead silence gap")
+                elif (not boring and score >= min_score) or force_clip:
                     approved.append(c)
                 else:
                     print(f"[QUALITY GATE] Rejected clip ({c.get('start')}s-{c.get('end')}s): score={score}, boring/menu={boring} -> {c.get('reason')}")
@@ -1177,7 +1183,7 @@ def render_vertical_short(
             hook_y, cap_y = 185, 864
             vf = (
                 f"[0:v]fps={OUT_FPS},split=2[cam_in][game_in];"
-                f"[cam_in]crop={cw}:{ch}:{cx}:{cy},scale={OUT_W}:{top_h}:force_original_aspect_ratio=increase,crop={OUT_W}:{top_h}[top_cam];"
+                f"[cam_in]crop={cw}:{ch}:{cx}:{cy},scale={OUT_W}:{top_h}:force_original_aspect_ratio=increase,crop={OUT_W}:{top_h}:(iw-{OUT_W})/2:0[top_cam];"
                 f"[game_in]scale={OUT_W}:{bot_h}:force_original_aspect_ratio=increase,crop={OUT_W}:{bot_h}[bot_game];"
                 f"[top_cam][bot_game]vstack=inputs=2,setsar=1[v0];"
             )
