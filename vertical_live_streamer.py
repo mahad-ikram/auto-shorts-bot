@@ -54,26 +54,67 @@ def _load_bold_font(size: int) -> ImageFont.FreeTypeFont:
     return ImageFont.load_default()
 
 
-def build_live_overlay_png(out_png: Path, hook_text: str = "LIVE GTA 6 TOP CLIPS • SUBSCRIBE TO HIT 1K!") -> Path:
+def fetch_channel_subscriber_count() -> int:
+    try:
+        token = refresh_google_access_token()
+        r = httpx.get(
+            "https://www.googleapis.com/youtube/v3/channels",
+            params={"part": "statistics", "mine": "true"},
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=15,
+        )
+        items = (r.json().get("items") or []) if r.status_code == 200 else []
+        if items:
+            return int((items[0].get("statistics") or {}).get("subscriberCount") or 0)
+    except Exception:
+        pass
+    return 0
+
+
+def next_sub_milestone(subs: int) -> int:
+    for m in (50, 100, 250, 500, 1000, 2500, 5000, 10000, 25000, 50000, 100000):
+        if subs < m:
+            return m
+    return ((subs // 100000) + 1) * 100000
+
+
+def build_live_overlay_png(out_png: Path, subs: int = 0, goal: int = 100) -> Path:
     im = Image.new("RGBA", (OUT_W, OUT_H), (0, 0, 0, 0))
     draw = ImageDraw.Draw(im, "RGBA")
-    draw.rectangle([0, 0, OUT_W, 92], fill=(9, 10, 16, 220))
-    draw.rectangle([0, 88, OUT_W, 94], fill=(255, 42, 133, 255))
-    draw.rounded_rectangle([28, 20, 168, 72], radius=14, fill=(235, 30, 50, 255))
-    live_font = _load_bold_font(34)
-    lb = draw.textbbox((0, 0), "LIVE", font=live_font)
-    draw.text((98 - (lb[2] - lb[0]) // 2, 46 - (lb[3] - lb[1]) // 2 - lb[1]), "LIVE", font=live_font, fill=(255, 255, 255, 255))
 
-    txt = hook_text.upper()[:46]
-    fsize = 34
-    while fsize >= 22:
-        tfont = _load_bold_font(fsize)
-        tb = draw.textbbox((0, 0), txt, font=tfont)
-        if (tb[2] - tb[0]) <= (OUT_W - 210):
-            break
-        fsize -= 2
-    tb = draw.textbbox((0, 0), txt, font=tfont)
-    draw.text((192, 46 - (tb[3] - tb[1]) // 2 - tb[1]), txt, font=tfont, fill=(255, 183, 3, 255))
+    draw.rectangle([0, 0, OUT_W, 136], fill=(9, 10, 16, 228))
+    draw.rectangle([0, 132, OUT_W, 138], fill=(255, 42, 133, 255))
+
+    draw.rounded_rectangle([28, 18, 164, 68], radius=14, fill=(235, 30, 50, 255))
+    live_font = _load_bold_font(32)
+    lb = draw.textbbox((0, 0), "LIVE", font=live_font)
+    draw.text((96 - (lb[2] - lb[0]) // 2, 43 - (lb[3] - lb[1]) // 2 - lb[1]), "LIVE", font=live_font, fill=(255, 255, 255, 255))
+
+    goal_txt = f"SUB GOAL: {subs:,} / {goal:,}  •  HIT SUBSCRIBE!"
+    gfont = _load_bold_font(30)
+    gb = draw.textbbox((0, 0), goal_txt, font=gfont)
+    draw.text((190, 43 - (gb[3] - gb[1]) // 2 - gb[1]), goal_txt, font=gfont, fill=(255, 183, 3, 255))
+
+    bar_x0, bar_y0, bar_x1, bar_y1 = 28, 84, OUT_W - 28, 114
+    draw.rounded_rectangle([bar_x0, bar_y0, bar_x1, bar_y1], radius=14, fill=(40, 26, 62, 235), outline=(123, 44, 191, 255), width=3)
+    pct = max(0.08, min(1.0, subs / max(1, goal)))
+    fill_x1 = bar_x0 + int((bar_x1 - bar_x0) * pct)
+    draw.rounded_rectangle([bar_x0 + 2, bar_y0 + 2, fill_x1 - 2, bar_y1 - 2], radius=12, fill=(255, 42, 133, 255))
+
+    pct_txt = f"{int(round((subs / max(1, goal)) * 100))}%"
+    pfont = _load_bold_font(22)
+    pb = draw.textbbox((0, 0), pct_txt, font=pfont)
+    draw.text((OUT_W // 2 - (pb[2] - pb[0]) // 2, 99 - (pb[3] - pb[1]) // 2 - pb[1]), pct_txt, font=pfont, fill=(255, 255, 255, 255))
+
+    cta_txt = "TAP SUBSCRIBE FOR DAILY GTA 6 CLIPS"
+    cfont = _load_bold_font(30)
+    cb = draw.textbbox((0, 0), cta_txt, font=cfont)
+    cw, ch = cb[2] - cb[0], cb[3] - cb[1]
+    cx0, cy0 = (OUT_W - cw) // 2 - 34, 1488
+    cx1, cy1 = cx0 + cw + 68, cy0 + ch + 28
+    draw.rounded_rectangle([cx0, cy0, cx1, cy1], radius=20, fill=(9, 10, 16, 215), outline=(255, 183, 3, 240), width=4)
+    draw.text(((OUT_W - cw) // 2, cy0 + 12 - cb[1]), cta_txt, font=cfont, fill=(255, 255, 255, 255))
+
     im.save(out_png, format="PNG")
     return out_png
 
@@ -252,7 +293,10 @@ if __name__ == "__main__":
     work = Path(tempfile.mkdtemp(prefix="vlive_run_"))
     broadcast_id = ""
     try:
-        overlay_png = build_live_overlay_png(work / "live_overlay.png")
+        cur_subs = fetch_channel_subscriber_count()
+        sub_goal = next_sub_milestone(cur_subs)
+        print(f"[SUB GOAL BAR] Live Subs: {cur_subs:,} -> Next Milestone: {sub_goal:,}")
+        overlay_png = build_live_overlay_png(work / "live_overlay.png", subs=cur_subs, goal=sub_goal)
         norm_clips, clip_titles = [], []
         for idx, item in enumerate(items, start=1):
             raw, norm = work / f"raw_{idx:02d}.mp4", work / f"norm_{idx:02d}.mp4"
