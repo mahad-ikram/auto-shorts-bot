@@ -1229,10 +1229,12 @@ def render_vertical_short(
         clip_dur = max(1.0, end - start)
         z_start = round(max(1.5, clip_dur * 0.45), 2)
         z_end = round(min(clip_dur - 0.4, z_start + 2.2), 2)
+        logo_png = Path("campaign_logo.webp").resolve()
+        has_logo = logo_png.is_file()
         zoom_vf = (
             f"[v0]scale=w='if(between(t,{z_start},{z_end}),1156,{OUT_W})':h='if(between(t,{z_start},{z_end}),2054,{OUT_H})':eval=frame,"
             f"crop={OUT_W}:{OUT_H}:(iw-{OUT_W})/2:(ih-{OUT_H})/2,setsar=1[vz];"
-            f"[vz]ass=sub.ass:fontsdir=f[v]"
+            f"[vz]ass=sub.ass:fontsdir=f[v_sub]"
         )
 
         sfx_wav = generate_hook_pop_sfx(work / "hook_pop.wav")
@@ -1258,7 +1260,13 @@ def render_vertical_short(
                 f"[main_a][sfx_a]amix=inputs=2:duration=first:normalize=0,loudnorm=I=-14:TP=-1.5:LRA=11[aout]"
             )
 
-        fc = vf + zoom_vf + audio_fc
+        if has_logo:
+            logo_idx = 3 if (vo_path and vo_dur > 0.4) else 2
+            ff_inputs += ["-i", str(logo_png)]
+            logo_vf = f";[{logo_idx}:v]scale=420:-1[clog];[v_sub][clog]overlay=(W-w)/2:H-h-280[v]"
+        else:
+            logo_vf = ";[v_sub]null[v]"
+        fc = vf + zoom_vf + logo_vf + audio_fc
         run_cmd(
             [
                 "ffmpeg", "-y", "-v", "error",

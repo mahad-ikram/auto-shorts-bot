@@ -1254,6 +1254,9 @@ def upload_and_schedule_short(
 ) -> Tuple[str, str]:
     token = access_token or refresh_google_access_token()
     clean_title = re.sub(r"[<>]", "", title)[:100] or "Live Highlight #Shorts"
+    camp_tag = env("CAMPAIGN_HASHTAG", "#clipup").strip()
+    if camp_tag and camp_tag.lower() not in (description or "").lower():
+        description = f"{description}\n{camp_tag}"
     clean_desc = re.sub(r"[<>]", "", description)[:4900]
 
     body = {
@@ -1408,9 +1411,12 @@ def build_social_caption(seo: Dict, streamer: str) -> str:
             niche_tags.append("#" + clean)
         if len(niche_tags) >= 3:
             break
+    camp_tag = env("CAMPAIGN_HASHTAG", "#clipup").strip()
+    if camp_tag and camp_tag.lstrip("#").lower() not in seen:
+        niche_tags.insert(0, camp_tag if camp_tag.startswith("#") else "#" + camp_tag)
     if "razongamerz" not in seen:
         niche_tags.append("#RazonGamerz")
-    tag_line = " ".join(niche_tags[:4])
+    tag_line = " ".join(niche_tags[:5])
 
     # Assemble cleanly under 380 characters (Meta Quality Checklist sweet spot: 150-380 chars)
     body = f"{raw_title}\n\n{question}"
