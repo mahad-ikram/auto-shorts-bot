@@ -56,8 +56,8 @@ jobs:
       YT_COOKIES_B64: ${{ secrets.YT_COOKIES_B64 }}
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
       TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-      POST_GAP_HOURS: "4"
-      MAX_DAILY_YT: "3"
+      POST_GAP_HOURS: "12"
+      MAX_DAILY_YT: "1"
       MAX_DAILY_FB: "2"
       MAX_DAILY_IG: "2"
       MIN_VIRAL_SCORE: "72"
